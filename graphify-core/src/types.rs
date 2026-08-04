@@ -14,13 +14,19 @@ pub enum FileType {
     Concept,
 }
 
+fn default_language() -> String {
+    "unknown".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub label: String,
     pub file_type: FileType,
     pub kind: String,
+    #[serde(default = "default_language")]
     pub language: String,
+    #[serde(alias = "file_path")]
     pub source_file: String,
     pub start_line: usize,
     pub end_line: usize,
@@ -32,13 +38,19 @@ pub struct Node {
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+fn default_confidence() -> String {
+    "EXTRACTED".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub source: NodeId,
     pub target: NodeId,
     pub relation: String,
     pub source_file: String,
+    #[serde(default = "default_confidence")]
     pub confidence: String,
+    #[serde(default)]
     pub source_location: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

@@ -81,6 +81,10 @@ impl GraphState {
         let graph_path = Path::new("graphify-out/graph.json");
         if let Some(parent) = graph_path.parent() {
             fs::create_dir_all(parent)?;
+            let gitignore_path = parent.join(".gitignore");
+            if !gitignore_path.exists() {
+                fs::write(&gitignore_path, "*\n")?;
+            }
         }
         let file = File::create(graph_path)?;
         serde_json::to_writer_pretty(file, &self.graph_data)?;

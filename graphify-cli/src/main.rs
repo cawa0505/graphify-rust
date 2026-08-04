@@ -97,6 +97,12 @@ fn run_extract(input_path: &Path, output_path: &Path) -> Result<()> {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
+        if parent != Path::new("") && parent != Path::new(".") {
+            let gitignore_path = parent.join(".gitignore");
+            if !gitignore_path.exists() {
+                std::fs::write(&gitignore_path, "*\n")?;
+            }
+        }
     }
 
     let json_str = serde_json::to_string_pretty(&graph_out)?;
