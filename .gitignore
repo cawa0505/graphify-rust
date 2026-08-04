@@ -5,3 +5,4 @@
 .idea/
 .vscode/
 Cargo.lock
+AGENTS.md
