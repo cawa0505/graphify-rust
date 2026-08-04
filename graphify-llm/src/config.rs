@@ -34,7 +34,22 @@ pub struct LLMConfig {
     pub api_keys: Vec<String>, // Flattened keys for rotation
 }
 
+#[derive(Deserialize)]
+struct LegacyConfig {
+    #[allow(dead_code)]
+    backend: Option<String>,
+    providers: Option<Vec<serde_json::Value>>,
+    extraction: Option<serde_json::Value>,
+}
+
 impl LLMConfig {
+    /// Loads the configuration from the first available source:
+    /// 1. `GRAPHIFY_CONFIG_PATH` env var.
+    /// 2. XDG standard config path (`~/.config/graphify/config.toml`).
+    /// 3. Legacy JSON config path (`~/.graphify/config.json`) with auto-migration.
+    ///
+    /// # Errors
+    /// Returns an error if no configuration file could be found or parsed.
     pub fn load_from_file<P: AsRef<Path>>(_path: P) -> Result<Self> {
         // 1. Check GRAPHIFY_CONFIG_PATH
         let env_path = std::env::var("GRAPHIFY_CONFIG_PATH").ok();
@@ -71,14 +86,6 @@ impl LLMConfig {
             let content = fs::read_to_string(final_legacy_path)
                 .map_err(|e| anyhow!("Failed to read legacy config: {}", e))?;
             
-            #[allow(dead_code)]
-            #[derive(Deserialize)]
-            struct LegacyConfig {
-                backend: Option<String>,
-                providers: Option<Vec<serde_json::Value>>,
-                extraction: Option<serde_json::Value>,
-            }
-
             let legacy: LegacyConfig = serde_json::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse legacy JSON: {}", e))?;
 
@@ -95,14 +102,15 @@ impl LLMConfig {
                 for p_val in pro_list {
                     let name = p_val["name"].as_str().unwrap_or("Unknown").to_string();
                     let r_type = match p_val["r#type"].as_str() {
-                        Some("ollama") => ProviderType::Ollama,
                         Some("gemini") => ProviderType::Gemini,
                         Some("openrouter") => ProviderType::OpenRouter,
                         _ => ProviderType::Ollama,
                     };
                     let endpoint = p_val["endpoint"].as_str().unwrap_or("").to_string();
                     let model = p_val["model"].as_str().unwrap_or("").to_string();
-                    let priority = p_val["priority"].as_u64().unwrap_or(10) as usize;
+                    
+                    let raw_priority = p_val["priority"].as_u64().unwrap_or(10);
+                    let priority = usize::try_from(raw_priority).unwrap_or(10);
                     
                     let p = Provider {
                         name,
@@ -123,8 +131,11 @@ impl LLMConfig {
             }
 
             if let Some(ex_val) = legacy.extraction {
-                config.extraction.chunk_size = ex_val["chunk_size"].as_u64().unwrap_or(1024) as usize;
-                config.extraction.max_concurrency = ex_val["max_concurrency"].as_u64().unwrap_or(1) as usize;
+                let chunk_val = ex_val["chunk_size"].as_u64().unwrap_or(1024);
+                let concurrency_val = ex_val["max_concurrency"].as_u64().unwrap_or(1);
+                
+                config.extraction.chunk_size = usize::try_from(chunk_val).unwrap_or(1024);
+                config.extraction.max_concurrency = usize::try_from(concurrency_val).unwrap_or(1);
             }
 
             config.providers.sort_by_key(|p| p.priority);
@@ -134,7 +145,8 @@ impl LLMConfig {
                 fs::create_dir_all(&xdg_dir).ok();
             }
             let xdg_path = xdg_dir.join("config.toml");
-            let toml_str = toml::to_string_pretty(&config).unwrap();
+            let toml_str = toml::to_string_pretty(&config)
+                .map_err(|e| anyhow!("Failed to serialize migrated TOML: {}", e))?;
             fs::write(&xdg_path, toml_str).ok();
             eprintln!("[graphify] Migrated legacy JSON config to {}", xdg_path.display());
 
