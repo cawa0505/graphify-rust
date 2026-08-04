@@ -1,0 +1,23 @@
+[package]
+name = "graphify-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "graphify-mcp"
+path = "src/main.rs"
+
+[dependencies]
+graphify-core = { path = "../graphify-core" }
+graphify-llm = { path = "../graphify-llm" }
+
+# Async / IO
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+petgraph = { version = "0.6", features = ["serde-1"] }
+
+[lints]
+workspace = true

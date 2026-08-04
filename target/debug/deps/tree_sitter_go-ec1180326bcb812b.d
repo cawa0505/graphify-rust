@@ -1,0 +1,8 @@
+/mnt/data/btrfs-ssd/Projects/Jimmy/homelab-integration/repos/GraphifyRust/target/debug/deps/tree_sitter_go-ec1180326bcb812b.d: /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/lib.rs /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../src/node-types.json /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/highlights.scm /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/tags.scm
+
+/mnt/data/btrfs-ssd/Projects/Jimmy/homelab-integration/repos/GraphifyRust/target/debug/deps/libtree_sitter_go-ec1180326bcb812b.rmeta: /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/lib.rs /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../src/node-types.json /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/highlights.scm /home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/tags.scm
+
+/home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/lib.rs:
+/home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../src/node-types.json:
+/home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/highlights.scm:
+/home/zeng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.23.4/bindings/rust/../../queries/tags.scm:

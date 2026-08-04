@@ -1,0 +1,23 @@
+[package]
+name = "graphify-llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+graphify-core = { path = "../graphify-core" }
+
+# Async / HTTP
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization & Config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+
+[lints]
+workspace = true
