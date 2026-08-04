@@ -31,10 +31,9 @@ pub fn query_bfs(
         for edge_ref in graph.edges_directed(curr_idx, Direction::Outgoing) {
             let target_idx = edge_ref.target();
 
-            visited_edges.insert(edge_ref.id());
+            let _ = visited_edges.insert(edge_ref.id());
 
-            if !visited_nodes.contains(&target_idx) {
-                visited_nodes.insert(target_idx);
+            if visited_nodes.insert(target_idx) {
                 queue.push_back((target_idx, depth + 1));
             }
         }
@@ -43,10 +42,9 @@ pub fn query_bfs(
         for edge_ref in graph.edges_directed(curr_idx, Direction::Incoming) {
             let source_idx = edge_ref.source();
 
-            visited_edges.insert(edge_ref.id());
+            let _ = visited_edges.insert(edge_ref.id());
 
-            if !visited_nodes.contains(&source_idx) {
-                visited_nodes.insert(source_idx);
+            if visited_nodes.insert(source_idx) {
                 queue.push_back((source_idx, depth + 1));
             }
         }

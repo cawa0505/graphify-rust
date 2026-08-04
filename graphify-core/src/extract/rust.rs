@@ -7,17 +7,17 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     let language = tree_sitter_rust::LANGUAGE;
     parser
         .set_language(&language.into())
-        .map_err(|e| anyhow!("Failed to load Rust parser: {}", e))?;
+        .map_err(|e| anyhow!("Failed to load Rust parser: {e}"))?;
 
     let tree = parser
         .parse(content, None)
-        .ok_or_else(|| anyhow!("Failed to parse Rust file: {}", file_path))?;
+        .ok_or_else(|| anyhow!("Failed to parse Rust file: {file_path}"))?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
 
     // The module itself is a Node
-    let module_id = NodeId(format!("{}:module", file_path));
+    let module_id = NodeId(format!("{file_path}:module"));
     nodes.push(Node {
         id: module_id.clone(),
         label: file_path.to_string(),
@@ -26,7 +26,7 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
         file_path: file_path.to_string(),
         start_line: 0,
         end_line: content.lines().count(),
-        description: Some(format!("Rust module: {}", file_path)),
+        description: Some(format!("Rust module: {file_path}")),
     });
 
     let source_bytes = content.as_bytes();

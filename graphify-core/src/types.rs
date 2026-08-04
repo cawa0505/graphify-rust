@@ -35,11 +35,17 @@ pub struct Node {
     pub id: NodeId,
     pub label: String,
     pub file_type: FileType,
-    pub kind: NodeKind,
-    pub file_path: String,
+    pub kind: String,
+    pub language: String,
+    pub source_file: String,
     pub start_line: usize,
     pub end_line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +55,8 @@ pub struct Edge {
     pub relation: String,
     pub source_file: String,
     pub confidence: String,
+    pub source_location: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 

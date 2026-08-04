@@ -1,3 +1,8 @@
+// ponytail: allow missing errors doc as this is an internal parser function propagating standard errors
+#![allow(clippy::missing_errors_doc)]
+// ponytail: allow collapsible_if for cleaner matching of AST node patterns
+#![allow(clippy::collapsible_if)]
+
 use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType, NodeKind};
 use anyhow::{Result, anyhow};
 use tree_sitter::{Parser, Node as TSNode};

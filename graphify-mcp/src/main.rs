@@ -1,3 +1,10 @@
+// ponytail: allow standard clippy lints to keep stdio MCP server implementation extremely simple and robust
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::significant_drop_tightening)]
+#![allow(clippy::needless_pass_by_value)]
+
 mod types;
 
 use anyhow::{anyhow, Result};

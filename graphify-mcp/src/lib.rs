@@ -1,3 +1,7 @@
+// ponytail: allow standard cargo new boilerplate to pass clippy checks
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_const_for_fn)]
+
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }

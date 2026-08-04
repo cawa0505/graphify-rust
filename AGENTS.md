@@ -51,3 +51,8 @@
 
 - One logical change per commit. Commit message format: `<type>: <description>` (e.g., `feat: add Python extractor`, `fix: handle empty imports`).
 - No commits with `WIP` or `fixup` in the message to main branch.
+
+## Backward Compatibility
+
+- **Strict Config Compatibility**: Must support/convert `~/.graphify/config.json` (the Python Graphify configuration containing `backend`, `providers`, and `extraction` settings) seamlessly. If `~/.config/graphify/config.toml` (or similar TOML) is used, any existing `config.json` must be automatically converted or loaded as a fallback on startup or installation without breaking the user environment.
+- **Strict Schema Compatibility**: All nodes must contain `file_type` and edges must contain `relation` (not `kind`), `source_file`, and `confidence` fields matching the python version.

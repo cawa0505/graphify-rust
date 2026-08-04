@@ -83,18 +83,18 @@ fn traverse_tree(
                 }
                 if current.kind() == "function_declarator" {
                     if let Some(name_node) = current.child_by_field_name("declarator") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
-                let node_id = NodeId(format!("{file_path}:function:{name}"));
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: NodeKind::Function,
-                    file_path: file_path.to_string(),
-                    start_line: node.start_position().row + 1,
-                    end_line: node.end_position().row + 1,
-                    description: Some(format!("function {name}")),
-                });
+                        let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                        let node_id = NodeId(format!("{file_path}:function:{name}"));
+                        nodes.push(Node {
+                            id: node_id.clone(),
+                            label: name.to_string(),
+                            file_type: FileType::Code,
+                            kind: NodeKind::Function,
+                            file_path: file_path.to_string(),
+                            start_line: node.start_position().row + 1,
+                            end_line: node.end_position().row + 1,
+                            description: Some(format!("function {name}")),
+                        });
                         edges.push(Edge {
                             source: parent_module_id.clone(),
                             target: node_id.clone(),
