@@ -14,22 +14,6 @@ pub enum FileType {
     Concept,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    Module,
-    Class,
-    Struct,
-    Trait,
-    Impl,
-    Function,
-    Method,
-    Variable,
-    Interface,
-    Namespace,
-    Unknown,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,

@@ -12,7 +12,7 @@ use graphify_core::extract::extract_file;
 use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
 use graphify_core::graph::query::query_bfs;
-use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId, NodeKind};
+use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -292,7 +292,7 @@ fn handle_tool_call(
             // Return top-level module topology, core structs and classes
             let mut summary_nodes = Vec::new();
             for node in &r_state.graph_data.nodes {
-                if node.kind == NodeKind::Module || node.kind == NodeKind::Class || node.kind == NodeKind::Struct || node.kind == NodeKind::Trait || node.kind == NodeKind::Interface {
+                if node.kind == "module" || node.kind == "class" || node.kind == "struct" || node.kind == "trait" || node.kind == "interface" {
                     summary_nodes.push(node.clone());
                 }
             }
@@ -351,7 +351,7 @@ fn handle_tool_call(
             let mut w_state = state_lock.write().map_err(|_| anyhow!("RwLock poisoned"))?;
 
             // Remove old nodes and edges originating from this file path
-            w_state.graph_data.nodes.retain(|n| n.file_path != params.file_path);
+            w_state.graph_data.nodes.retain(|n| n.source_file != params.file_path);
             w_state.graph_data.edges.retain(|e| e.source_file != params.file_path);
 
             // Add new nodes and edges

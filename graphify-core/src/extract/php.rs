@@ -1,4 +1,9 @@
-use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType, NodeKind};
+// ponytail: allow missing errors doc as this is an internal parser function propagating standard errors
+#![allow(clippy::missing_errors_doc)]
+// ponytail: allow collapsible_if for cleaner matching of AST node patterns
+#![allow(clippy::collapsible_if)]
+
+use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType};
 use anyhow::{Result, anyhow};
 use tree_sitter::{Parser, Node as TSNode};
 
@@ -17,16 +22,19 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     let mut edges = Vec::new();
 
     // The module itself is a Node
-    let module_id = NodeId(format!("{}:module", file_path));
+    let module_id = NodeId(format!("{file_path}:module"));
     nodes.push(Node {
         id: module_id.clone(),
         label: file_path.to_string(),
         file_type: FileType::Code,
-        kind: NodeKind::Module,
-        file_path: file_path.to_string(),
+        kind: "module".to_string(),
+        language: "php".to_string(),
+        source_file: file_path.to_string(),
         start_line: 0,
         end_line: content.lines().count(),
-        description: Some(format!("PHP module: {}", file_path)),
+        doc_comment: None,
+        description: Some(format!("PHP module: {file_path}")),
+        metadata: None,
     });
 
     let source_bytes = content.as_bytes();
@@ -48,16 +56,20 @@ fn traverse_tree(
         "class_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownClass");
-                let node_id = NodeId(format!("{}:class:{}", file_path, name));
+                let node_id = NodeId(format!("{file_path}:class:{name}"));
+                let start_line = node.start_position().row + 1;
                 nodes.push(Node {
                     id: node_id.clone(),
                     label: name.to_string(),
                     file_type: FileType::Code,
-                    kind: NodeKind::Class,
-                    file_path: file_path.to_string(),
-                    start_line: node.start_position().row + 1,
+                    kind: "class".to_string(),
+                    language: "php".to_string(),
+                    source_file: file_path.to_string(),
+                    start_line,
                     end_line: node.end_position().row + 1,
-                    description: Some(format!("class {}", name)),
+                    doc_comment: None,
+                    description: Some(format!("class {name}")),
+                    metadata: None,
                 });
                 edges.push(Edge {
                     source: parent_module_id.clone(),
@@ -65,6 +77,7 @@ fn traverse_tree(
                     relation: "contains".to_string(),
                     source_file: file_path.to_string(),
                     confidence: "EXTRACTED".to_string(),
+                    source_location: format!("{file_path}:{start_line}"),
                     description: None,
                 });
             }
@@ -72,16 +85,20 @@ fn traverse_tree(
         "method_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownMethod");
-                let node_id = NodeId(format!("{}:method:{}", file_path, name));
+                let node_id = NodeId(format!("{file_path}:method:{name}"));
+                let start_line = node.start_position().row + 1;
                 nodes.push(Node {
                     id: node_id.clone(),
                     label: name.to_string(),
                     file_type: FileType::Code,
-                    kind: NodeKind::Method,
-                    file_path: file_path.to_string(),
-                    start_line: node.start_position().row + 1,
+                    kind: "method".to_string(),
+                    language: "php".to_string(),
+                    source_file: file_path.to_string(),
+                    start_line,
                     end_line: node.end_position().row + 1,
-                    description: Some(format!("method {}", name)),
+                    doc_comment: None,
+                    description: Some(format!("method {name}")),
+                    metadata: None,
                 });
                 edges.push(Edge {
                     source: parent_module_id.clone(),
@@ -89,6 +106,7 @@ fn traverse_tree(
                     relation: "contains".to_string(),
                     source_file: file_path.to_string(),
                     confidence: "EXTRACTED".to_string(),
+                    source_location: format!("{file_path}:{start_line}"),
                     description: None,
                 });
 
@@ -98,16 +116,20 @@ fn traverse_tree(
         "function_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
-                let node_id = NodeId(format!("{}:function:{}", file_path, name));
+                let node_id = NodeId(format!("{file_path}:function:{name}"));
+                let start_line = node.start_position().row + 1;
                 nodes.push(Node {
                     id: node_id.clone(),
                     label: name.to_string(),
                     file_type: FileType::Code,
-                    kind: NodeKind::Function,
-                    file_path: file_path.to_string(),
-                    start_line: node.start_position().row + 1,
+                    kind: "function".to_string(),
+                    language: "php".to_string(),
+                    source_file: file_path.to_string(),
+                    start_line,
                     end_line: node.end_position().row + 1,
-                    description: Some(format!("function {}", name)),
+                    doc_comment: None,
+                    description: Some(format!("function {name}")),
+                    metadata: None,
                 });
                 edges.push(Edge {
                     source: parent_module_id.clone(),
@@ -115,6 +137,7 @@ fn traverse_tree(
                     relation: "contains".to_string(),
                     source_file: file_path.to_string(),
                     confidence: "EXTRACTED".to_string(),
+                    source_location: format!("{file_path}:{start_line}"),
                     description: None,
                 });
 
@@ -125,16 +148,20 @@ fn traverse_tree(
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = name_node.utf8_text(source_bytes).unwrap_or("");
                 if !name.is_empty() {
-                    let node_id = NodeId(format!("namespace:{}", name));
+                    let node_id = NodeId(format!("namespace:{name}"));
+                    let start_line = node.start_position().row + 1;
                     nodes.push(Node {
                         id: node_id.clone(),
                         label: name.to_string(),
                         file_type: FileType::Code,
-                        kind: NodeKind::Namespace,
-                        file_path: file_path.to_string(),
-                        start_line: node.start_position().row + 1,
+                        kind: "namespace".to_string(),
+                        language: "php".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
                         end_line: node.end_position().row + 1,
-                        description: Some(format!("namespace {}", name)),
+                        doc_comment: None,
+                        description: Some(format!("namespace {name}")),
+                        metadata: None,
                     });
                     edges.push(Edge {
                         source: parent_module_id.clone(),
@@ -142,6 +169,7 @@ fn traverse_tree(
                         relation: "member_of".to_string(),
                         source_file: file_path.to_string(),
                         confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
                         description: None,
                     });
                 }
@@ -168,12 +196,14 @@ fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &No
             if let Some(function_node) = current.child_by_field_name("function") {
                 let name = function_node.utf8_text(source_bytes).unwrap_or("");
                 if !name.is_empty() && !name.contains('$') && !name.contains("->") && !name.contains("::") {
+                    let start_line = current.start_position().row + 1;
                     edges.push(Edge {
                         source: caller_id.clone(),
-                        target: NodeId(format!("{}:function:{}", file_path, name)),
+                        target: NodeId(format!("{file_path}:function:{name}")),
                         relation: "calls".to_string(),
                         source_file: file_path.to_string(),
                         confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
                         description: Some(format!("calls {name}")),
                     });
                 }
