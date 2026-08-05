@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 pub fn build_graph(nodes: &[Node], edges: &[Edge]) -> Result<(DiGraph<Node, Edge>, HashMap<NodeId, NodeIndex>)> {
-    let mut graph = DiGraph::<Node, Edge>::new();
+    let mut graph = DiGraph::<Node, Edge>::with_capacity(nodes.len(), edges.len());
     let mut node_map = HashMap::new();
 
     // 1. Add all nodes

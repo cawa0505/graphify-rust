@@ -14,6 +14,7 @@ anyhow = "1.0"
 
 # Graph processing
 petgraph = { version = "0.6", features = ["serde-1"] }
+rayon = "1.10"
 
 # AST Parsers
 tree-sitter = "0.25"

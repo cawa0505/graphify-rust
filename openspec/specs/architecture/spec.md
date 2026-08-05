@@ -43,6 +43,18 @@ The local semantic pipeline SHALL strictly enforce JSON Schema formats using GBN
 - THEN the generated tokens SHALL be strictly bound to valid JSON structures
 - AND the validation success rate SHALL be 100%
 
+### Requirement: Parallel AST Extraction with Thread-Limit Control
+The static extraction module SHALL support multi-threaded parallel AST parsing of files using Rayon, while allowing the user to configure the maximum thread count via both the configuration file and CLI argument overrides to maintain optimal host performance.
+
+#### Scenario: Restricting AST parsing to 4 cores
+- GIVEN a codebase with 100 source files
+- WHEN AST extraction is executed with a concurrency limit of 4
+- THEN Rayon's thread pool SHALL be configured with exactly 4 active threads
+- AND all files SHALL be parsed in parallel using this constrained thread pool.
+
+### Requirement: Petgraph Memory Allocation Optimizations
+The graph construction engine SHALL pre-allocate memory for both nodes and edges using `Graph::with_capacity` to prevent multiple heap-reallocation copies and memory fragmentation during large codebase processing.
+
 ## [待討論]
 
 - 是否保留 `hyperedges`（超超關係）的支援？（Python 版中用於表示一個文件對多個節點的共同引用）

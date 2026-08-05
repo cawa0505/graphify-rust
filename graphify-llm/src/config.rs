@@ -25,6 +25,8 @@ pub struct Provider {
 pub struct ExtractionConfig {
     pub chunk_size: usize,
     pub max_concurrency: usize,
+    #[serde(default)]
+    pub concurrency: Option<usize>, // Rayon thread pool concurrency limit
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +151,7 @@ impl LLMConfig {
                 extraction: ExtractionConfig {
                     chunk_size: 1024,
                     max_concurrency: 1,
+                    concurrency: None,
                 },
                 api_keys: Vec::new(),
                 memory: MemoryConfig::default(),

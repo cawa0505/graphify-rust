@@ -281,6 +281,7 @@ mod tests {
             extraction: ExtractionConfig {
                 chunk_size: 1024,
                 max_concurrency: 1,
+                concurrency: None,
             },
             api_keys: vec!["badkey".to_string(), "goodkey".to_string()],
             memory: MemoryConfig::default(),
@@ -325,6 +326,7 @@ mod tests {
             extraction: ExtractionConfig {
                 chunk_size: 1024,
                 max_concurrency: 1,
+                concurrency: None,
             },
             api_keys: vec![], // Empty global keys, fallback to provider api_key
             memory: MemoryConfig::default(),

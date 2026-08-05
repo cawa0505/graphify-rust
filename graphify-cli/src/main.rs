@@ -7,8 +7,9 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use graphify_core::{
     build_graph, extract_file, find_shortest_path, query_bfs, GraphMetadata, GraphOutput,
-    Node, NodeId, Edge,
+    Node, NodeId, ExtractionResult,
 };
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -27,6 +28,9 @@ enum Commands {
         /// Output path for the generated graph
         #[arg(short, long, default_value = "graphify-out/graph.toon")]
         output: PathBuf,
+        /// Concurrency limit (number of CPU threads) for parallel AST parsing
+        #[arg(short = 'j', long)]
+        concurrency: Option<usize>,
     },
     /// Query a node in the graph using BFS traversal
     Query {
@@ -54,27 +58,53 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Extract { path, output } => run_extract(&path, &output)?,
+        Commands::Extract { path, output, concurrency } => run_extract(&path, &output, concurrency)?,
         Commands::Query { target, depth, graph } => run_query(&target, depth, &graph)?,
         Commands::Path { source, target, graph } => run_path(&source, &target, &graph)?,
     }
     Ok(())
 }
 
-fn run_extract(input_path: &Path, output_path: &Path) -> Result<()> {
+fn run_extract(input_path: &Path, output_path: &Path, concurrency: Option<usize>) -> Result<()> {
+    let mut file_paths = Vec::new();
+    if input_path.is_file() {
+        if get_lang(input_path).is_some() {
+            file_paths.push(input_path.to_path_buf());
+        }
+    } else {
+        collect_files(input_path, &mut file_paths)?;
+    }
+
+    // Configure Rayon if specified
+    let final_concurrency = concurrency.or_else(|| {
+        graphify_llm::config::LLMConfig::load_from_file("")
+            .ok()
+            .and_then(|cfg| cfg.extraction.concurrency)
+    });
+
+    if let Some(n) = final_concurrency {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global();
+    }
+
+    let results: Vec<(String, ExtractionResult)> = file_paths
+        .par_iter()
+        .filter_map(|path| {
+            let lang = get_lang(path)?;
+            let res = extract_file(path).ok()?;
+            Some((lang, res))
+        })
+        .collect();
+
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut languages = std::collections::HashSet::new();
 
-    if input_path.is_file() {
-        if let Some(lang) = get_lang(input_path) {
-            languages.insert(lang);
-        }
-        let res = extract_file(input_path)?;
+    for (lang, res) in results {
         nodes.extend(res.nodes);
         edges.extend(res.edges);
-    } else {
-        collect_dir(input_path, &mut nodes, &mut edges, &mut languages)?;
+        languages.insert(lang);
     }
 
     let metadata = GraphMetadata {
@@ -137,12 +167,7 @@ fn get_lang(path: &Path) -> Option<String> {
         })
 }
 
-fn collect_dir(
-    dir: &Path,
-    nodes: &mut Vec<Node>,
-    edges: &mut Vec<Edge>,
-    languages: &mut std::collections::HashSet<String>,
-) -> Result<()> {
+fn collect_files(dir: &Path, file_paths: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -152,13 +177,9 @@ fn collect_dir(
                     continue;
                 }
             }
-            collect_dir(&path, nodes, edges, languages)?;
-        } else if let Some(lang) = get_lang(&path) {
-            if let Ok(res) = extract_file(&path) {
-                nodes.extend(res.nodes);
-                edges.extend(res.edges);
-                languages.insert(lang);
-            }
+            collect_files(&path, file_paths)?;
+        } else if get_lang(&path).is_some() {
+            file_paths.push(path);
         }
     }
     Ok(())
