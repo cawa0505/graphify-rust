@@ -160,7 +160,20 @@ pub fn create_canvas_widget<'a>(
                     let dist = (dx * dx + dy * dy).sqrt();
                     if is_selected || dist < 40.0 * zoom {
                         let offset_y = if is_selected { -3.5 } else { -2.5 };
-                        ctx.print(x - 4.0, y + offset_y, ratatui::text::Span::styled(node.label.clone(), ratatui::style::Style::default().fg(color)));
+                        let style = if is_selected {
+                            ratatui::style::Style::default()
+                                .fg(ratatui::style::Color::Black)
+                                .bg(ratatui::style::Color::Cyan)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
+                        } else {
+                            ratatui::style::Style::default().fg(color)
+                        };
+                        let label_text = if is_selected {
+                            format!(" ▶ {} ◀ ", node.label)
+                        } else {
+                            node.label.clone()
+                        };
+                        ctx.print(x - 4.0, y + offset_y, ratatui::text::Span::styled(label_text, style));
                     }
                 }
             }
