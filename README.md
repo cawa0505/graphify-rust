@@ -18,7 +18,7 @@
 
 ### 3. 長短期語意記憶（Qdrant & STM）配置
 - **短期對話視窗 (STM)**：設定 `max_messages` 上限，超過時自動啟動語意 Compartment 壓縮，精簡歷史。
-- **長期語意記憶 (LTM)**：對接 Homelab **Qdrant 向量引擎**（預設位址為 `http://192.168.77.185:6333`，採用 `Cosine` 餘弦相似度演算法），將結構化的架構決策與專案規則進行持久化與跨 Session 語意檢索。
+- **長期語意記憶 (LTM)**：對接 **Qdrant 向量引擎**（預設位址為 `http://localhost:6333`，採用 `Cosine` 餘弦相似度演算法），將結構化的架構決策與專案規則進行持久化與跨 Session 語意檢索。
 - **防禦性相容**：設定讀取模組具備預設值防禦，舊版不含記憶體欄位的設定檔在載入時會自動套用預設值，並在自動遷移（Migrate）至 XDG 目錄時回寫完整的現代 TOML 格式。
 
 ### 4. 毫秒級多語言 AST 提取
@@ -105,7 +105,7 @@ enabled = false
 provider = "qdrant"
 
 [memory.long_term.qdrant]
-url = "http://192.168.77.185:6333"
+url = "http://localhost:6333"
 collection = "graphify_memory"
 distance = "Cosine"
 ```
