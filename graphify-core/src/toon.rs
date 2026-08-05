@@ -108,6 +108,16 @@ fn split_csv_line(s: &str) -> Vec<String> {
     parts
 }
 
+#[derive(PartialEq, Eq)]
+struct EdgeGroupKey {
+    source: NodeId,
+    relation: String,
+    source_file: String,
+    confidence: String,
+    source_location: String,
+    description: Option<String>,
+}
+
 /// Serialize a `GraphOutput` into TOON format string.
 #[must_use]
 pub fn to_toon(graph: &GraphOutput) -> String {
@@ -163,20 +173,41 @@ pub fn to_toon(graph: &GraphOutput) -> String {
     }
     out.push('\n');
 
-    // 3. Edges
-    let _ = writeln!(out, "edges[{},]{{source,target,relation,source_file,confidence,source_location,description}}:", graph.edges.len());
+    // 3. Edges (Virtual Hyperedges Aggregation)
+    let mut groups: Vec<(EdgeGroupKey, Vec<NodeId>)> = Vec::new();
     for edge in &graph.edges {
-        let description_str = edge.description.as_deref().map_or_else(|| "null".to_string(), |s| escape_string(s, true));
+        let key = EdgeGroupKey {
+            source: edge.source.clone(),
+            relation: edge.relation.clone(),
+            source_file: edge.source_file.clone(),
+            confidence: edge.confidence.clone(),
+            source_location: edge.source_location.clone(),
+            description: edge.description.clone(),
+        };
+        if let Some(pos) = groups.iter().position(|(k, _)| k == &key) {
+            groups[pos].1.push(edge.target.clone());
+        } else {
+            groups.push((key, vec![edge.target.clone()]));
+        }
+    }
+
+    let _ = writeln!(out, "edges[{},]{{source,targets,relation,source_file,confidence,source_location,description}}:", groups.len());
+    for (key, targets) in &groups {
+        let description_str = key.description.as_deref().map_or_else(|| "null".to_string(), |s| escape_string(s, true));
+        let targets_str = targets.iter()
+            .map(|t| escape_string(&t.0, true))
+            .collect::<Vec<_>>()
+            .join("|");
 
         let _ = writeln!(
             out,
             "  {},{},{},{},{},{},{}",
-            escape_string(&edge.source.0, true),
-            escape_string(&edge.target.0, true),
-            escape_string(&edge.relation, true),
-            escape_string(&edge.source_file, true),
-            escape_string(&edge.confidence, true),
-            escape_string(&edge.source_location, true),
+            escape_string(&key.source.0, true),
+            targets_str,
+            escape_string(&key.relation, true),
+            escape_string(&key.source_file, true),
+            escape_string(&key.confidence, true),
+            escape_string(&key.source_location, true),
             description_str
         );
     }
@@ -308,7 +339,7 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
                 let parts = split_csv_line(e_trimmed);
                 if parts.len() >= 6 {
                     let source = NodeId(unescape_string(&parts[0]));
-                    let target = NodeId(unescape_string(&parts[1]));
+                    let targets_raw = &parts[1];
                     let relation = unescape_string(&parts[2]);
                     let source_file = unescape_string(&parts[3]);
                     let confidence = unescape_string(&parts[4]);
@@ -320,15 +351,19 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
                         None
                     };
 
-                    edges.push(Edge {
-                        source,
-                        target,
-                        relation,
-                        source_file,
-                        confidence,
-                        source_location,
-                        description,
-                    });
+                    // Split targets by pipe '|' and unescape each!
+                    let targets: Vec<String> = targets_raw.split('|').map(unescape_string).collect();
+                    for target_str in targets {
+                        edges.push(Edge {
+                            source: source.clone(),
+                            target: NodeId(target_str),
+                            relation: relation.clone(),
+                            source_file: source_file.clone(),
+                            confidence: confidence.clone(),
+                            source_location: source_location.clone(),
+                            description: description.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -441,6 +476,71 @@ mod tests {
         assert_eq!(deserialized.edges[0].confidence, original.edges[0].confidence);
         assert_eq!(deserialized.edges[0].source_location, original.edges[0].source_location);
         assert_eq!(deserialized.edges[0].description, original.edges[0].description);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_virtual_hyperedges_aggregation_roundtrip() -> Result<()> {
+        let original = GraphOutput {
+            metadata: GraphMetadata {
+                version: "1.0.0".to_string(),
+                generated_at: "2026-08-05".to_string(),
+                total_nodes: 4,
+                total_edges: 3,
+                languages: vec!["rust".to_string()],
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            nodes: vec![],
+            edges: vec![
+                Edge {
+                    source: NodeId("src/app.rs".to_string()),
+                    target: NodeId("src/db.rs".to_string()),
+                    relation: "imports".to_string(),
+                    source_file: "src/app.rs".to_string(),
+                    confidence: "EXTRACTED".to_string(),
+                    source_location: "src/app.rs:1".to_string(),
+                    description: None,
+                },
+                Edge {
+                    source: NodeId("src/app.rs".to_string()),
+                    target: NodeId("src/cache.rs".to_string()),
+                    relation: "imports".to_string(),
+                    source_file: "src/app.rs".to_string(),
+                    confidence: "EXTRACTED".to_string(),
+                    source_location: "src/app.rs:1".to_string(),
+                    description: None,
+                },
+                Edge {
+                    source: NodeId("src/app.rs".to_string()),
+                    target: NodeId("src/config.rs".to_string()),
+                    relation: "imports".to_string(),
+                    source_file: "src/app.rs".to_string(),
+                    confidence: "EXTRACTED".to_string(),
+                    source_location: "src/app.rs:1".to_string(),
+                    description: None,
+                },
+            ],
+        };
+
+        let serialized = to_toon(&original);
+        
+        // Assert that the serialized string contains EXACTLY 1 row of edge table (meaning they were aggregated successfully!)
+        // In TOON, there should be a line starting with "  src/app.rs" and containing "src/db.rs|src/cache.rs|src/config.rs"
+        assert!(serialized.contains("src/db.rs|src/cache.rs|src/config.rs"));
+        
+        // Assert that the edge count in the table header is indeed "1"
+        assert!(serialized.contains("edges[1,]"));
+
+        let deserialized = from_toon(&serialized)?;
+
+        // Ensure we expanded them back to 3 distinct edges in memory!
+        assert_eq!(deserialized.edges.len(), 3);
+        assert_eq!(deserialized.edges[0].source.0, "src/app.rs");
+        assert_eq!(deserialized.edges[0].target.0, "src/db.rs");
+        assert_eq!(deserialized.edges[1].target.0, "src/cache.rs");
+        assert_eq!(deserialized.edges[2].target.0, "src/config.rs");
 
         Ok(())
     }
