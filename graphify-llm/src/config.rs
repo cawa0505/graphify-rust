@@ -51,12 +51,20 @@ impl Default for ShortTermMemoryConfig {
     }
 }
 
+fn default_indexing_threshold() -> usize {
+    20000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QdrantConfig {
     pub url: String,
     pub api_key: Option<String>,
     pub collection: String,
     pub distance: String,
+    #[serde(default)]
+    pub grpc: bool,
+    #[serde(default = "default_indexing_threshold")]
+    pub indexing_threshold: usize,
 }
 
 impl Default for QdrantConfig {
@@ -66,6 +74,8 @@ impl Default for QdrantConfig {
             api_key: None,
             collection: "graphify_memory".to_string(),
             distance: "Cosine".to_string(),
+            grpc: false,
+            indexing_threshold: 20000,
         }
     }
 }

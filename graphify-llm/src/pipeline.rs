@@ -440,6 +440,8 @@ mod tests {
                         api_key: None,
                         collection: "graphify_memory".to_string(),
                         distance: "Cosine".to_string(),
+                        grpc: false,
+                        indexing_threshold: 20000,
                     },
                     index_kinds: vec!["module".to_string(), "class".to_string(), "struct".to_string(), "trait".to_string(), "interface".to_string()],
                 },
@@ -468,7 +470,7 @@ mod tests {
         store.upsert_nodes(&nodes).await?;
 
         // 3. Query similar nodes
-        let results = store.query_similar_nodes("query", 5).await?;
+        let results = store.query_similar_nodes("query", 5, None).await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["payload"]["node_id"], "test_node_id");
 
@@ -512,7 +514,7 @@ mod tests {
         store.upsert_nodes(&nodes).await?;
         
         println!("Performing semantic query against Qdrant...");
-        let results = store.query_similar_nodes("physical validation", 5).await?;
+        let results = store.query_similar_nodes("physical validation", 5, None).await?;
         println!("Real search results returned: {} items", results.len());
         
         Ok(())

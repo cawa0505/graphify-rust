@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_if)]
 
 pub mod skill;
+pub mod snapshot;
 pub mod tui;
 pub mod ui;
 
@@ -14,6 +15,7 @@ use graphify_core::{
     Node, NodeId, ExtractionResult,
 };
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -411,6 +413,9 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         graphify_llm::config::LLMConfig::load_from_file("")?
     };
 
+    // Incremental-sync state: Some(changed) means "only sync these files", None means full upsert.
+    let mut changed_files: Option<HashSet<String>> = None;
+
     // 2. 獲取 GraphOutput
     let graph_out = if path.is_file() {
         let ext = path.extension().and_then(|e| e.to_str());
@@ -428,8 +433,23 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         let default_json = PathBuf::from("graphify-out/graph.json");
         
         let out_p = output_path.map_or_else(|| default_toon.clone(), Path::to_path_buf);
-        
-        if out_p.exists() {
+        let snapshot_path = out_p.parent().unwrap_or_else(|| Path::new(".")).join(".graphify-snapshot.json");
+
+        let current_hashes = snapshot::compute_file_hashes(path)?;
+        let old_hashes = snapshot::load_snapshot(&snapshot_path);
+        let changed = snapshot::diff_hashes(&old_hashes, &current_hashes);
+
+        let graph = if !force && !old_hashes.is_empty() {
+            // Incremental: a snapshot exists, so we only re-extract and sync when files changed.
+            if changed.is_empty() {
+                println!("[graphify] No source changes detected since last index ({} file(s) unchanged), skipping.", current_hashes.len());
+                return Ok(());
+            }
+            println!("[graphify] {} file(s) changed, re-extracting graph for incremental sync...", changed.len());
+            run_extract(path, &out_p, None)?;
+            changed_files = Some(changed);
+            load_graph_output(&out_p)?
+        } else if out_p.exists() {
             load_graph_output(&out_p)?
         } else if out_p == default_toon && default_json.exists() {
             println!("[graphify] Found legacy JSON graph at {}, migrating and loading...", default_json.display());
@@ -446,7 +466,12 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
             println!("Extracting codebase graph first before indexing...");
             run_extract(path, &out_p, None)?;
             load_graph_output(&out_p)?
-        }
+        };
+
+        // Persist the fresh snapshot for the next incremental run (also after force re-index).
+        snapshot::save_snapshot(&snapshot_path, &current_hashes)?;
+        println!("[graphify] Snapshot saved for incremental indexing: {}", snapshot_path.display());
+        graph
     };
 
     if graph_out.nodes.is_empty() {
@@ -458,31 +483,23 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         .enable_all()
         .build()?;
 
-    // 3. 如果 Force 則先刪除 Qdrant 集合
-    if force {
-        let qdrant_config = &config.memory.long_term.qdrant;
-        let delete_url = format!(
-            "{}/collections/{}",
-            qdrant_config.url.trim_end_matches('/'),
-            qdrant_config.collection
-        );
-        let client = reqwest::Client::new();
-        let mut req = client.delete(&delete_url);
-        if let Some(ref key) = qdrant_config.api_key {
-            req = req.header("api-key", key);
-        }
-        let _ = rt.block_on(async { req.send().await })?;
-        println!("Deleted existing Qdrant collection '{}' for force-recreation.", qdrant_config.collection);
-    }
-
-    // 4. 建立 Qdrant 實體與非同步執行
+    // 3. 建立 Qdrant 實體與非同步執行
     println!("Connecting to Ollama and Qdrant to generate embeddings and index {} nodes...", graph_out.nodes.len());
     let store = graphify_llm::memory::QdrantMemoryStore::new(config.clone());
 
     rt.block_on(async {
+        if force {
+            let _ = store.delete_collection().await;
+            println!("Deleted existing Qdrant collection '{}' for force-recreation.", config.memory.long_term.qdrant.collection);
+        }
         store.ensure_collection().await?;
-        println!("Uploading nodes to Qdrant collection '{}'...", config.memory.long_term.qdrant.collection);
-        store.upsert_nodes(&graph_out.nodes).await?;
+        if let Some(changed) = &changed_files {
+            println!("Incrementally syncing {} changed file(s) into Qdrant collection '{}'...", changed.len(), config.memory.long_term.qdrant.collection);
+            store.sync_nodes(&graph_out.nodes, changed).await?;
+        } else {
+            println!("Uploading nodes to Qdrant collection '{}'...", config.memory.long_term.qdrant.collection);
+            store.upsert_nodes(&graph_out.nodes).await?;
+        }
         Ok::<(), anyhow::Error>(())
     })?;
 
