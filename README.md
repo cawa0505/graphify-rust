@@ -1,6 +1,8 @@
 # GraphifyRust
 
-基於 Rust 與 Tree-sitter 實作的高效能、低延遲靜態程式碼 AST 語意圖譜建構工具。整合精簡 `.toon` 採用精簡 Token 序列化格式、多金鑰執行緒安全原子輪轉（Auto-Rotate）容災管線、Qdrant 長短期語意記憶體配置，以及 MCP (Model Context Protocol) 伺服器，專為 LLM 助理提供極低成本、極致精準的程式碼拓撲感知能力。
+基於 Rust 與 Tree-sitter 實作的高效能、低延遲靜態程式碼 AST 語意圖譜建構工具。採用精簡 `.toon` Token 序列化格式、多金鑰執行緒安全原子輪轉（Auto-Rotate）容災管線、Qdrant 長短期語意記憶體配置，以及 MCP (Model Context Protocol) 伺服器，專為 LLM 助理提供極低成本、極致精準的程式碼拓撲感知能力。
+
+![Graphify TUI Demo](docs/graphify-tui-demo.gif)
 
 ---
 

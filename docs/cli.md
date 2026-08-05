@@ -51,6 +51,10 @@ Launches the zero-dependency interactive terminal dashboard for full-screen stru
 # Launch interactive TUI
 graphify tui
 ```
+
+#### TUI Demonstration Walkthrough
+![Graphify TUI Demo](graphify-tui-demo.gif)
+
 **Controls**:
 - `Tab` or `1`/`2`: Switch between `Explorer` and `Visual Graph` tabs.
 - `j`/`k` / Up/Down: Navigate node list.
@@ -61,6 +65,9 @@ graphify tui
 - `+`/`-`: Zoom in/out on the canvas.
 - `r`/`R`: Reset canvas camera (pan and zoom).
 - Left Mouse Click: Select/switch tabs, click node on canvas to jump-select.
+- Left Mouse Drag: Grab and pan the 2D visual canvas topology.
+- Mouse Scroll Wheel: Zoom in / zoom out of the canvas.
+- Right Mouse Click: Click any node to select it and instantly pop open its BFS Trace Modal.
 - `Esc` / `q`: Dismiss modal, exit search, or quit TUI.
 
 ### 6. `index`
