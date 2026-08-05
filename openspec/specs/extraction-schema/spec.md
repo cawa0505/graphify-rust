@@ -64,5 +64,33 @@
   }
   ```
 
-### 2.3 相容性退化原則 (YAGNI Constraint)
-- 廢除 Python 版的 `hyperedges`（多對多超邊關係），以保持 Rust 版極簡且高效的單向圖譜拓撲，所有對齊工具一律透過基本單邊（`edges`）進行相容。
+### 2.3 虛擬序列化超邊聚合規範 (Virtual Hyperedge Aggregation Constraint)
+為了兼顧記憶體內圖譜遍歷的最優 CPU 效能，以及磁碟儲存與大語言模型（LLM）對話時的極致 Token 節省，系統採取「記憶體內標準二元有向邊，序列化/傳輸時虛擬超邊聚合」的混血架構：
+- **記憶體內 (In-Memory)**：保持 `petgraph::graph::DiGraph` 標準二元有向邊的拓撲結構，確保最短路徑與廣度優先搜尋（BFS）等核心算法不受超圖複雜度干擾，維持毫秒級的物理運算效能。
+- **序列化輸出 (Serialization Output)**：在寫出到 `.json` 或 `.toon` 時，編碼器必須**主動將「同一個 `source`、`relation` 與 `confidence`」的邊進行關係聚合**，將多條一對一扁平邊壓縮為一對多的「虛擬超邊（Virtual Hyperedge）」結構。
+
+#### 1. `.toon` 格式中的超邊聚合
+在 `.toon` 格式中，原本的 `target` 欄位升級為複數的 `targets` 欄位。多個目標節點 ID 之間使用 **`|` (Pipe)** 字元進行緊湊分隔：
+```text
+edges[1,]{source,targets,relation,confidence,source_file,source_location}
+src/app.rs,src/db.rs|src/cache.rs|src/config.rs,imports,EXTRACTED,src/app.rs,src/app.rs:5
+```
+
+#### 2. `.json` (graph.json) 格式中的超邊聚合
+為了保持與 Python 舊版 HTML 視覺化渲染器的高度相容，在導出 `.json` 格式時，可支援將 `target` 字段在序列化層面表示為 `targets` 陣列（若環境不支援，則解碼器在載入時必須具備能同時解讀 `target: String` 與 `targets: Array<String>` 的防禦性容錯能力）：
+```json
+{
+  "source": "rust:main::run_server",
+  "targets": [
+    "rust:db::init_db",
+    "rust:cache::get_redis"
+  ],
+  "relation": "calls",
+  "confidence": "EXTRACTED",
+  "source_file": "src/main.rs",
+  "source_location": "src/main.rs:42"
+}
+```
+
+#### 3. 反序列化還原 (Deserialization Expansion)
+在讀取 `.json` 或 `.toon` 圖譜檔案載入回記憶體時，解碼器（Decoder）必須自動將聚合的 `targets`（以 `|` 分割的字串或 JSON 陣列）**展開（Flatten）**回標準的一對一扁平二元有向邊，無縫裝載進 Petgraph 數據結構中。此展開過程對上層圖運算 API 100% 隱蔽透明，完全保障向後相容。
