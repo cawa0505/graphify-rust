@@ -18,6 +18,11 @@ toml = "0.8"
 # Utilities
 anyhow = "1.0"
 thiserror = "1.0"
+dirs = "6.0"
+
+# Local-first high performance ONNX Embedding
+fastembed = { version = "5.17", default-features = false, features = ["hf-hub"] }
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
 
 [lints]
 workspace = true

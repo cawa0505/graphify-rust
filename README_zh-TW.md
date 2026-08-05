@@ -35,11 +35,12 @@
 ## 📦 快速安裝與編譯 (Installation)
 
 ```bash
-# 1. 複製並進入專案目錄
+# 直接從 GitHub 一鍵安裝
+cargo install --git https://github.com/cawa0505/graphify-rust.git --branch main --bin graphify --force
+
+# 或複製並進入本地專案目錄
 git clone https://github.com/cawa0505/graphify-rust.git
 cd graphify-rust
-
-# 2. 編譯並安裝到本地環境 (~/.cargo/bin/graphify)
 cargo install --path graphify-cli --force
 ```
 

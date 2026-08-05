@@ -35,11 +35,12 @@ We compared the AST extraction and graph building speeds on a multi-language tes
 ## 📦 Quick Installation & Build
 
 ```bash
-# 1. Clone and enter directory
+# Install directly from GitHub
+cargo install --git https://github.com/cawa0505/graphify-rust.git --branch main --bin graphify --force
+
+# Or clone and enter directory to build locally
 git clone https://github.com/cawa0505/graphify-rust.git
 cd graphify-rust
-
-# 2. Build and install locally (~/.cargo/bin/graphify)
 cargo install --path graphify-cli --force
 ```
 

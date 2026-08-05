@@ -3,10 +3,13 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
+use fastembed::{Bgem3Embedding, Bgem3InitOptions, Bgem3Model};
 
 pub struct QdrantMemoryStore {
     config: LLMConfig,
     client: Client,
+    // ponytail: Arc + Mutex allows safe sharing and on-demand initialization across tokio threads
+    fastembed_model: std::sync::Arc<std::sync::Mutex<Option<Bgem3Embedding>>>,
 }
 
 impl QdrantMemoryStore {
@@ -15,12 +18,59 @@ impl QdrantMemoryStore {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
-        Self { config, client }
+        Self {
+            config,
+            client,
+            fastembed_model: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn get_or_init_fastembed(&self) -> Result<std::sync::Arc<std::sync::Mutex<Option<Bgem3Embedding>>>> {
+        {
+            let mut lock = self.fastembed_model.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+            if lock.is_none() {
+                let cache_dir = dirs::home_dir().map_or_else(
+                    || std::path::PathBuf::from(".fastembed_cache"),
+                    |h| h.join(".cache").join("fastembed"),
+                );
+
+                // ponytail: ensure the cache directory exists to prevent any file system or permission write anomalies
+                let _ = std::fs::create_dir_all(&cache_dir);
+
+                let mut opts = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
+                    .with_max_length(1024)
+                    .with_cache_dir(cache_dir);
+
+                if let Some(concurrency) = self.config.extraction.concurrency {
+                    opts = opts.with_intra_threads(concurrency);
+                } else {
+                    opts = opts.with_intra_threads(4);
+                }
+                let model = Bgem3Embedding::try_new(opts)
+                    .map_err(|e| anyhow!("Failed to init fastembed BGE-M3 model: {}", e))?;
+                *lock = Some(model);
+            }
+        }
+        Ok(self.fastembed_model.clone())
     }
 
     /// Generates embeddings for a batch of text chunks using the configured Ollama model.
     pub async fn get_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let embedding_config = &self.config.memory.long_term.embedding;
+
+        if embedding_config.provider == "fastembed" {
+            let texts = texts.to_vec();
+            let model_arc = self.get_or_init_fastembed()?;
+            let results = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>> {
+                let mut lock = model_arc.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+                let model = lock.as_mut().ok_or_else(|| anyhow!("Model not initialized"))?;
+                let output = model.embed(texts, None).map_err(|e| anyhow!("fastembed error: {}", e))?;
+                drop(lock); // ponytail: early drop to avoid significant_drop_tightening
+                Ok(output.dense)
+            }).await??;
+            return Ok(results);
+        }
+
         if embedding_config.provider != "ollama" {
             return Err(anyhow!("Unsupported embedding provider: {}", embedding_config.provider));
         }

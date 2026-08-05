@@ -223,14 +223,133 @@ fn collect_files(dir: &Path, file_paths: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+// ponytail: allow too_many_lines since parsing legacy JSON with manual field conversion is naturally long
+#[allow(clippy::too_many_lines)]
 fn load_graph_output(path: &Path) -> Result<GraphOutput> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read graph file: {}", path.display()))?;
     if path.extension().and_then(|e| e.to_str()) == Some("toon") {
         graphify_core::from_toon(&content)
     } else {
-        let output: GraphOutput = serde_json::from_str(&content)?;
-        Ok(output)
+        // Support backward compatibility for old .json graph format or current JSON
+        match serde_json::from_str::<GraphOutput>(&content) {
+            Ok(output) => Ok(output),
+            Err(e) => {
+                // If standard parsing fails, try parsing custom legacy / partial json or fallback
+                eprintln!("[graphify] Warning: Failed to parse JSON as current schema ({e}). Attempting legacy transformation...");
+                // Try reading as unstructured json to see if we can migrate it
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(nodes_arr) = val.get("nodes").and_then(serde_json::Value::as_array) {
+                        let mut nodes = Vec::new();
+                        for n_val in nodes_arr {
+                            let id = n_val.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                            let label = n_val.get("label").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                            
+                            let file_type = match n_val.get("file_type").and_then(serde_json::Value::as_str) {
+                                Some("code") => graphify_core::FileType::Code,
+                                Some("document") => graphify_core::FileType::Document,
+                                Some("paper") => graphify_core::FileType::Paper,
+                                Some("image") => graphify_core::FileType::Image,
+                                Some("rationale") => graphify_core::FileType::Rationale,
+                                Some("concept") => graphify_core::FileType::Concept,
+                                _ => {
+                                    // Map legacy "kind" or fallback
+                                    let kind = n_val.get("kind").and_then(serde_json::Value::as_str).unwrap_or("");
+                                    if kind == "file" || kind == "module" {
+                                        graphify_core::FileType::Document
+                                    } else {
+                                        graphify_core::FileType::Code
+                                    }
+                                }
+                            };
+
+                            let kind = n_val.get("kind").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
+                            let language = n_val.get("language").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
+                            let source_file = n_val.get("source_file")
+                                .or_else(|| n_val.get("file_path"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            
+                            let start_line_val = n_val.get("start_line").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                            let start_line = usize::try_from(start_line_val).unwrap_or(0);
+                            
+                            let end_line_val = n_val.get("end_line").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                            let end_line = usize::try_from(end_line_val).unwrap_or(0);
+                            
+                            let doc_comment = n_val.get("doc_comment").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
+                            let description = n_val.get("description").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
+                            let metadata = n_val.get("metadata").and_then(serde_json::Value::as_object).cloned();
+
+                            nodes.push(Node {
+                                id: graphify_core::NodeId(id),
+                                label,
+                                file_type,
+                                kind,
+                                language,
+                                source_file,
+                                start_line,
+                                end_line,
+                                doc_comment,
+                                description,
+                                metadata,
+                            });
+                        }
+
+                        let mut edges = Vec::new();
+                        if let Some(edges_arr) = val.get("edges").and_then(serde_json::Value::as_array) {
+                            for e_val in edges_arr {
+                                let source = e_val.get("source").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                let target = e_val.get("target").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                let relation = e_val.get("relation")
+                                    .or_else(|| e_val.get("kind")) // old schema used "kind" for edges too
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("calls")
+                                    .to_string();
+                                let source_file = e_val.get("source_file").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                let confidence = e_val.get("confidence").and_then(serde_json::Value::as_str).unwrap_or("EXTRACTED").to_string();
+                                let source_location = e_val.get("source_location").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                let description = e_val.get("description").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
+
+                                edges.push(graphify_core::Edge {
+                                    source: graphify_core::NodeId(source),
+                                    target: graphify_core::NodeId(target),
+                                    relation,
+                                    source_file,
+                                    confidence,
+                                    source_location,
+                                    description,
+                                });
+                            }
+                        }
+
+                        let version = val.get("metadata").and_then(|m| m.get("version")).and_then(serde_json::Value::as_str).unwrap_or("1.0.0").to_string();
+                        let generated_at = val.get("metadata").and_then(|m| m.get("generated_at")).and_then(serde_json::Value::as_str).unwrap_or("0").to_string();
+                        let total_nodes = nodes.len();
+                        let total_edges = edges.len();
+                        let languages = val.get("metadata").and_then(|m| m.get("languages"))
+                            .and_then(serde_json::Value::as_array)
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(std::string::ToString::to_string)).collect())
+                            .unwrap_or_default();
+
+                        return Ok(GraphOutput {
+                            nodes,
+                            edges,
+                            metadata: graphify_core::GraphMetadata {
+                                version,
+                                generated_at,
+                                total_nodes,
+                                total_edges,
+                                languages,
+                                input_tokens: 0,
+                                output_tokens: 0,
+                            }
+                        });
+                    }
+                }
+                Err(anyhow!("Failed to deserialize or migrate JSON: {e}"))
+            }
+        }
     }
 }
 
@@ -293,14 +412,41 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
     };
 
     // 2. 獲取 GraphOutput
-    let graph_out = if path.is_file() && (path.extension().and_then(|e| e.to_str()) == Some("toon") || path.extension().and_then(|e| e.to_str()) == Some("json")) {
-        load_graph_output(path)?
+    let graph_out = if path.is_file() {
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext == Some("toon") || ext == Some("json") {
+            load_graph_output(path)?
+        } else {
+            return Err(anyhow!(
+                "Unsupported file format for indexing: {}. Supported: .toon, .json",
+                path.display()
+            ));
+        }
     } else {
-        // 如果是目錄，我們需要先進行 Extract 提取
-        let out_p = output_path.map_or_else(|| PathBuf::from("graphify-out/graph.toon"), Path::to_path_buf);
-        println!("Extracting codebase graph first before indexing...");
-        run_extract(path, &out_p, None)?;
-        load_graph_output(&out_p)?
+        // 如果是目錄，優先尋找已經提取好的 graphify-out/graph.toon 
+        let default_toon = PathBuf::from("graphify-out/graph.toon");
+        let default_json = PathBuf::from("graphify-out/graph.json");
+        
+        let out_p = output_path.map_or_else(|| default_toon.clone(), Path::to_path_buf);
+        
+        if out_p.exists() {
+            load_graph_output(&out_p)?
+        } else if out_p == default_toon && default_json.exists() {
+            println!("[graphify] Found legacy JSON graph at {}, migrating and loading...", default_json.display());
+            load_graph_output(&default_json)?
+        } else {
+            // 如果不存在，且使用者沒有下 -f (force) 參數
+            if !force {
+                println!("[graphify] No existing extracted graph file found ({}).", out_p.display());
+                println!("[graphify] To parse your codebase and index from scratch, run with --force / -f:");
+                println!("  graphify index {} --force", path.display());
+                return Ok(());
+            }
+            // 否則，在 force 的情況下，我們自動進行 Extract 提取
+            println!("Extracting codebase graph first before indexing...");
+            run_extract(path, &out_p, None)?;
+            load_graph_output(&out_p)?
+        }
     };
 
     if graph_out.nodes.is_empty() {

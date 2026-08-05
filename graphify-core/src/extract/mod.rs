@@ -10,6 +10,11 @@ pub mod javascript;
 pub mod c;
 pub mod cpp;
 pub mod php;
+pub mod java;
+pub mod swift;
+
+#[cfg(test)]
+mod tests;
 
 pub fn extract_file(path: &Path) -> Result<ExtractionResult> {
     let ext = path.extension()
@@ -30,6 +35,8 @@ pub fn extract_file(path: &Path) -> Result<ExtractionResult> {
         "c" | "h" => c::extract(&content, &file_path),
         "cpp" | "cc" | "cxx" | "hpp" | "h++" | "hh" => cpp::extract(&content, &file_path),
         "php" => php::extract(&content, &file_path),
+        "java" => java::extract(&content, &file_path),
+        "swift" => swift::extract(&content, &file_path),
         _ => anyhow::bail!("Unsupported file extension: {}", ext),
     }
 }
