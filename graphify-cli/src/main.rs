@@ -15,7 +15,7 @@ use graphify_core::{
     Node, NodeId, ExtractionResult,
 };
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -415,6 +415,9 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
 
     // Incremental-sync state: Some(changed) means "only sync these files", None means full upsert.
     let mut changed_files: Option<HashSet<String>> = None;
+    // Snapshot written only after a successful upload so a failed run doesn't
+    // poison the incremental diff (a stale snapshot would skip a rebuild).
+    let mut snapshot_state: Option<(PathBuf, BTreeMap<String, String>)> = None;
 
     // 2. 獲取 GraphOutput
     let graph_out = if path.is_file() {
@@ -469,8 +472,7 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         };
 
         // Persist the fresh snapshot for the next incremental run (also after force re-index).
-        snapshot::save_snapshot(&snapshot_path, &current_hashes)?;
-        println!("[graphify] Snapshot saved for incremental indexing: {}", snapshot_path.display());
+        snapshot_state = Some((snapshot_path, current_hashes));
         graph
     };
 
@@ -502,6 +504,11 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         }
         Ok::<(), anyhow::Error>(())
     })?;
+
+    if let Some((snapshot_path, hashes)) = &snapshot_state {
+        snapshot::save_snapshot(snapshot_path, hashes)?;
+        println!("[graphify] Snapshot saved for incremental indexing: {}", snapshot_path.display());
+    }
 
     println!("Successfully indexed codebase graph into Qdrant store!");
     Ok(())
