@@ -6,7 +6,7 @@
 
 ## 核心技術優勢 (Key Capabilities)
 
-### 1. 獨創 `.toon` 緊湊圖譜格式 (First-Class `.toon` Format)
+### 1. 緊湊型 `.toon` 圖譜格式 (First-Class `.toon` Format)
 - **解耦 JSON 冗餘**：傳統圖譜使用大體積 JSON 格式會因重複的屬性鍵名（Keys）造成嚴重的 Token 浪費與快取失效。
 - **Tabular Array 串流序列化**：`.toon` 格式採用類似表格式 CSV 的緊湊列結構（如 `nodes[103,]{id,label,file_type...}`），僅在 header 定義一次屬性名稱，資料列全數以精簡 CSV 形式緊密排列，縮減體積達 **60% 以上**。
 - **無縫向下相容**：`graphify-cli` 與 `graphify-mcp` 自動偵測 `.toon` 與 `.json` 副檔名，並提供透明的互轉及並存支援。
