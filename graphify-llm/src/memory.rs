@@ -80,30 +80,45 @@ impl QdrantMemoryStore {
         }
 
         let url = format!("{}/api/embeddings", embedding_config.endpoint.trim_end_matches('/'));
-        let mut results = Vec::new();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
+        let mut join_set = tokio::task::JoinSet::new();
 
-        for text in texts {
-            let payload = serde_json::json!({
-                "model": embedding_config.model,
-                "prompt": text,
+        for (idx, text) in texts.iter().cloned().enumerate() {
+            let client = self.client.clone();
+            let url = url.clone();
+            let model = embedding_config.model.clone();
+            let sem = semaphore.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.map_err(|e| anyhow!("Semaphore acquire failed: {}", e))?;
+                let payload = serde_json::json!({
+                    "model": model,
+                    "prompt": text,
+                });
+
+                let res = client.post(&url)
+                    .json(&payload)
+                    .send()
+                    .await?;
+                let res = res.error_for_status()?;
+                let body: Value = res.json().await?;
+                
+                body["embedding"].as_array().map_or_else(|| Err(anyhow!("Ollama response missing embedding array")), |arr| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let vec: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+                    Ok::<(usize, Vec<f32>), anyhow::Error>((idx, vec))
+                })
             });
-
-            let res = self.client.post(&url)
-                .json(&payload)
-                .send()
-                .await?;
-            let res = res.error_for_status()?;
-            let body: Value = res.json().await?;
-            
-            if let Some(arr) = body["embedding"].as_array() {
-                #[allow(clippy::cast_possible_truncation)]
-                let vec: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
-                results.push(vec);
-            } else {
-                return Err(anyhow!("Ollama response missing embedding array"));
-            }
         }
 
+        let mut indexed_results = Vec::with_capacity(texts.len());
+        while let Some(res) = join_set.join_next().await {
+            let (idx, vec) = res.map_err(|e| anyhow!("Task join failed: {}", e))??;
+            indexed_results.push((idx, vec));
+        }
+
+        indexed_results.sort_by_key(|(idx, _)| *idx);
+        let results = indexed_results.into_iter().map(|(_, vec)| vec).collect();
         Ok(results)
     }
 
