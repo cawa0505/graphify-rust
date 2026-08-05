@@ -3,6 +3,9 @@
 // ponytail: allow collapsible_if for nested directory filtering checks
 #![allow(clippy::collapsible_if)]
 
+pub mod skill;
+pub mod tui;
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use graphify_core::{
@@ -53,6 +56,22 @@ enum Commands {
         #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
     },
+    /// Install the Graphify Skill directive for AI Assistants (`OpenCode`, Cline, Cursor, Roo Code)
+    InstallSkill {
+        /// Install to global level (~/.config/opencode/skills and ~/.cursorrules)
+        #[arg(short, long)]
+        global: bool,
+        
+        /// Custom target directory for installation
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+    },
+    /// Interactive TUI-based codebase graph inspector
+    Tui {
+        /// Path to the graph file
+        #[arg(short, long, default_value = "graphify-out/graph.toon")]
+        graph: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -61,6 +80,8 @@ fn main() -> Result<()> {
         Commands::Extract { path, output, concurrency } => run_extract(&path, &output, concurrency)?,
         Commands::Query { target, depth, graph } => run_query(&target, depth, &graph)?,
         Commands::Path { source, target, graph } => run_path(&source, &target, &graph)?,
+        Commands::InstallSkill { global, dir } => skill::install_skill(global, dir)?,
+        Commands::Tui { graph } => run_tui(&graph)?,
     }
     Ok(())
 }
@@ -237,5 +258,11 @@ fn run_path(source: &str, target: &str, graph_path: &Path) -> Result<()> {
             println!("[]");
         }
     }
+    Ok(())
+}
+
+fn run_tui(graph_path: &Path) -> Result<()> {
+    let graph = load_graph_output(graph_path)?;
+    tui::run_tui(graph)?;
     Ok(())
 }

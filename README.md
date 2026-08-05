@@ -12,7 +12,7 @@
 - **無縫向下相容**：`graphify-cli` 與 `graphify-mcp` 自動偵測 `.toon` 與 `.json` 副檔名，並提供透明的互轉及並存支援。
 
 ### 2. Auto-Rotate 雙層執行緒安全容災管線
-- **Atomic 輪轉**：多執行緒環境下採用 `AtomicUsize` 進行無鎖模除（Modulo）輪轉，完美承載多執行緒並發提取。
+- **無鎖 API Key 金鑰自動輪替 (Atomic Key Rotation)**：在多執行緒並行環境下，不使用任何會造成卡頓的軟體鎖 (Mutex Lock)，而是直接採用 CPU 硬體級的原子整數計數器 (`AtomicUsize`) 搭配「模除餘數 (%)」運算。高併發或高並行時，每個請求會透過硬體原子操作秒級自動分配、輪流使用您的多組 API 金鑰，實現 100% 執行緒安全的自動循環。
 - **零延遲 429 容災**：遭遇 Rate Limit (HTTP 429) 時，不進行睡眠等待，立即推進原子計數器，切換至下一個 API Key。
 - **動態 Provider 降級**：當主線 Cloud API (Gemini, OpenRouter) 所有的金鑰均告罄，自動、無感降級至 Homelab 本地 SLM (Ollama, e.g. Qwen2.5-Coder)。
 
@@ -24,6 +24,14 @@
 ### 4. 毫秒級多語言 AST 提取
 - 基於原生 Tree-sitter，支援 `Rust`, `Python`, `Go`, `JavaScript`, `C`, `C++`, `PHP` 七大語言靜態代碼精確解析。
 - 提取模組、結構體、函數、介面、類別等核心符號，並建立 `contains`、`calls`、`imports` 等實體關聯。
+
+### 5. 互動式 Terminal TUI 關係圖視覺化 (Interactive TUI Graph Inspector)
+- **零 Web 載入、毫秒級啟動 (Instant-Load)**：拒絕臃腫、吃記憶體的 Web 網頁圖譜平台。`graphify tui` 自啟動到畫面繪製完成僅需 **30 毫秒內**。
+- **雙欄式面板設計**：左側以樹狀結構列出專案的所有 AST 節點，支援方向鍵或 `j`/`k` 進行即時導航；右側則為 Node Inspector，滑動時 **0 延遲** 即時運算並顯示選中節點的詳細資訊（類型、路徑、行號）與 Incoming/Outgoing 呼叫鏈拓撲！
+- **鍵盤極客流操作體驗**：
+  - 按下 `/` 鍵：立刻聚焦搜尋欄，進行極速模糊過濾。
+  - 按下 `g` 鍵：直接呼叫您系統的預設編輯器（如 Neovim、VSCode 等）並**直接跳轉到該程式碼的精確行號**！
+  - 按下 `Esc` / `q` 鍵：退出搜尋或關閉 TUI。
 
 ---
 
