@@ -36,7 +36,7 @@
 
 ```bash
 # 直接從 GitHub 一鍵安裝
-cargo install --git https://github.com/cawa0505/graphify-rust.git --branch main --bin graphify --force
+cargo install --git https://github.com/cawa0505/graphify-rust.git --branch main graphify-cli --force
 
 # 或複製並進入本地專案目錄
 git clone https://github.com/cawa0505/graphify-rust.git
