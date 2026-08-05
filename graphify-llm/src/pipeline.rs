@@ -441,6 +441,7 @@ mod tests {
                         collection: "graphify_memory".to_string(),
                         distance: "Cosine".to_string(),
                     },
+                    index_kinds: vec!["module".to_string(), "class".to_string(), "struct".to_string(), "trait".to_string(), "interface".to_string()],
                 },
             },
         };

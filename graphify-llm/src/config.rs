@@ -89,12 +89,24 @@ impl Default for EmbeddingConfig {
     }
 }
 
+fn default_index_kinds() -> Vec<String> {
+    vec![
+        "module".to_string(),
+        "class".to_string(),
+        "struct".to_string(),
+        "trait".to_string(),
+        "interface".to_string(),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongTermMemoryConfig {
     pub enabled: bool,
     pub provider: String,
     pub embedding: EmbeddingConfig,
     pub qdrant: QdrantConfig,
+    #[serde(default = "default_index_kinds")]
+    pub index_kinds: Vec<String>,
 }
 
 impl Default for LongTermMemoryConfig {
@@ -104,6 +116,7 @@ impl Default for LongTermMemoryConfig {
             provider: "qdrant".to_string(),
             embedding: EmbeddingConfig::default(),
             qdrant: QdrantConfig::default(),
+            index_kinds: default_index_kinds(),
         }
     }
 }

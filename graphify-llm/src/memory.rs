@@ -170,7 +170,17 @@ impl QdrantMemoryStore {
 
         let qdrant_config = &lt_config.qdrant;
         
-        let texts: Vec<String> = nodes.iter().map(|node| {
+        // ponytail: filter out fine-grained nodes based on config to optimize memory density & RAG quality
+        let filtered_nodes: Vec<&graphify_core::Node> = nodes
+            .iter()
+            .filter(|node| lt_config.index_kinds.contains(&node.kind))
+            .collect();
+
+        if filtered_nodes.is_empty() {
+            return Ok(());
+        }
+
+        let texts: Vec<String> = filtered_nodes.iter().map(|node| {
             format!(
                 "ID: {}\nLabel: {}\nFileType: {:?}\nKind: {}\nLanguage: {}\nSourceFile: {}\nLineRange: {}-{}\nDoc: {}\nDescription: {}",
                 node.id.0,
@@ -186,10 +196,6 @@ impl QdrantMemoryStore {
             )
         }).collect();
 
-        if texts.is_empty() {
-            return Ok(());
-        }
-
         let embeddings = self.get_embeddings(&texts).await?;
 
         let url = format!(
@@ -199,7 +205,7 @@ impl QdrantMemoryStore {
         );
 
         let mut points = Vec::new();
-        for (node, vector) in nodes.iter().zip(embeddings) {
+        for (node, vector) in filtered_nodes.iter().zip(embeddings) {
             let point_id = {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
