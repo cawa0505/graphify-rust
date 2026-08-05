@@ -37,6 +37,8 @@ impl QdrantMemoryStore {
                 // ponytail: ensure the cache directory exists to prevent any file system or permission write anomalies
                 let _ = std::fs::create_dir_all(&cache_dir);
 
+                println!("[graphify] Initializing local ONNX Runtime & loading BGE-M3 (int8)...");
+
                 let mut opts = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
                     .with_max_length(1024)
                     .with_cache_dir(cache_dir);
@@ -48,6 +50,8 @@ impl QdrantMemoryStore {
                 }
                 let model = Bgem3Embedding::try_new(opts)
                     .map_err(|e| anyhow!("Failed to init fastembed BGE-M3 model: {}", e))?;
+                
+                println!("[graphify] ONNX Runtime initialized & BGE-M3 model loaded successfully!");
                 *lock = Some(model);
             }
         }
