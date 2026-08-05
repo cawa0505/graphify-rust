@@ -105,7 +105,7 @@ impl App {
             last_tabs_area: None,
             last_list_area: None,
             drag_start: None,
-            show_event_log: true,
+            show_event_log: false,
             event_log: Vec::new(),
             log_state: ListState::default(),
             flash: Flash::default(),
