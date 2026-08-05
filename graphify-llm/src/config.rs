@@ -30,6 +30,16 @@ pub struct ExtractionConfig {
     pub concurrency: Option<usize>, // Rayon thread pool concurrency limit
 }
 
+impl Default for ExtractionConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: 1024,
+            max_concurrency: 1,
+            concurrency: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortTermMemoryConfig {
     pub max_messages: usize,
@@ -112,6 +122,24 @@ pub struct LLMConfig {
     pub api_keys: Vec<String>, // Flattened keys for rotation
     #[serde(default)]
     pub memory: MemoryConfig,
+}
+
+impl Default for LLMConfig {
+    fn default() -> Self {
+        Self {
+            providers: vec![Provider {
+                name: "ollama".to_string(),
+                r#type: ProviderType::Ollama,
+                endpoint: "http://localhost:11434".to_string(),
+                model: "bge-m3".to_string(),
+                api_key: None,
+                priority: 10,
+            }],
+            extraction: ExtractionConfig::default(),
+            api_keys: Vec::new(),
+            memory: MemoryConfig::default(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -268,27 +296,19 @@ impl LLMConfig {
             return Ok(config);
         }
 
-        // Default fallback if nothing exists
-        let content = fs::read_to_string(xdg_path)
-            .map_err(|e| anyhow!("Failed to read XDG config: {}", e))?;
-        let mut config: LLMConfig = toml::from_str(&content)
-            .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
-
-        // Auto-populate api_keys if empty
-        if config.api_keys.is_empty() {
-            for p in &config.providers {
-                if let Some(ref k) = p.api_key {
-                    for k_part in k.split(',') {
-                        let trimmed = k_part.trim();
-                        if !trimmed.is_empty() {
-                            config.api_keys.push(trimmed.to_string());
-                        }
-                    }
-                }
-            }
+        // Default fallback if nothing exists: auto-create default TOML configuration
+        let default_config = LLMConfig::default();
+        let xdg_dir = xdg_path.parent().ok_or_else(|| anyhow!("Invalid XDG path parent"))?;
+        if !xdg_dir.exists() {
+            fs::create_dir_all(xdg_dir)
+                .map_err(|e| anyhow!("Failed to create XDG config directory: {}", e))?;
         }
+        let toml_str = toml::to_string_pretty(&default_config)
+            .map_err(|e| anyhow!("Failed to serialize default TOML: {}", e))?;
+        fs::write(&xdg_path, &toml_str)
+            .map_err(|e| anyhow!("Failed to write default XDG config: {}", e))?;
+        eprintln!("[graphify] Created default configuration at {}", xdg_path.display());
 
-        config.providers.sort_by_key(|p| p.priority);
-        Ok(config)
+        Ok(default_config)
     }
 }
