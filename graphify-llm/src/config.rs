@@ -159,11 +159,12 @@ impl LLMConfig {
         }
 
         // 2. Check XDG Path (~/.config/graphify/config.toml)
-        let xdg_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| ".".to_string());
-        let xdg_path = std::path::Path::new(&xdg_home)
-            .join(".config")
-            .join("graphify")
-            .join("config.toml");
+        let xdg_path = std::env::var("XDG_CONFIG_HOME").map_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::Path::new(&home).join(".config").join("graphify").join("config.toml")
+        }, |xdg_home| {
+            std::path::PathBuf::from(xdg_home).join("graphify").join("config.toml")
+        });
         
         if xdg_path.exists() {
             let content = fs::read_to_string(xdg_path)

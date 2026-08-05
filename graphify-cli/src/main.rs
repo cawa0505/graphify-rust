@@ -5,6 +5,7 @@
 
 pub mod skill;
 pub mod tui;
+pub mod ui;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -56,7 +57,7 @@ enum Commands {
         #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
     },
-    /// Install the Graphify Skill directive for AI Assistants (`OpenCode`, Cline, Cursor, Roo Code)
+    /// Install the Graphify Skill directive for AI Assistants
     InstallSkill {
         /// Install to global level (~/.config/opencode/skills and ~/.cursorrules)
         #[arg(short, long)]
@@ -72,6 +73,21 @@ enum Commands {
         #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
     },
+    /// Index a codebase or a serialized graph file into the Qdrant vector store
+    Index {
+        /// File or directory to extract and index, or path to a serialized .toon/.json file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Optional path to the configuration file (default is XDG ~/.config/graphify/config.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Output path if indexing directly from a newly parsed codebase (otherwise defaults to graphify-out/graph.toon)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Force recreation of the Qdrant collection if it already exists
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -82,6 +98,7 @@ fn main() -> Result<()> {
         Commands::Path { source, target, graph } => run_path(&source, &target, &graph)?,
         Commands::InstallSkill { global, dir } => skill::install_skill(global, dir)?,
         Commands::Tui { graph } => run_tui(&graph)?,
+        Commands::Index { path, config, output, force } => run_index(&path, config.as_deref(), output.as_deref(), force)?,
     }
     Ok(())
 }
@@ -264,5 +281,65 @@ fn run_path(source: &str, target: &str, graph_path: &Path) -> Result<()> {
 fn run_tui(graph_path: &Path) -> Result<()> {
     let graph = load_graph_output(graph_path)?;
     tui::run_tui(graph)?;
+    Ok(())
+}
+
+fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>, force: bool) -> Result<()> {
+    // 1. 載入 LLM & Memory 設定
+    let config = if let Some(cfg_p) = config_path {
+        graphify_llm::config::LLMConfig::load_from_file(cfg_p.to_str().unwrap_or(""))?
+    } else {
+        graphify_llm::config::LLMConfig::load_from_file("")?
+    };
+
+    // 2. 獲取 GraphOutput
+    let graph_out = if path.is_file() && (path.extension().and_then(|e| e.to_str()) == Some("toon") || path.extension().and_then(|e| e.to_str()) == Some("json")) {
+        load_graph_output(path)?
+    } else {
+        // 如果是目錄，我們需要先進行 Extract 提取
+        let out_p = output_path.map_or_else(|| PathBuf::from("graphify-out/graph.toon"), Path::to_path_buf);
+        println!("Extracting codebase graph first before indexing...");
+        run_extract(path, &out_p, None)?;
+        load_graph_output(&out_p)?
+    };
+
+    if graph_out.nodes.is_empty() {
+        println!("No nodes found to index!");
+        return Ok(());
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    // 3. 如果 Force 則先刪除 Qdrant 集合
+    if force {
+        let qdrant_config = &config.memory.long_term.qdrant;
+        let delete_url = format!(
+            "{}/collections/{}",
+            qdrant_config.url.trim_end_matches('/'),
+            qdrant_config.collection
+        );
+        let client = reqwest::Client::new();
+        let mut req = client.delete(&delete_url);
+        if let Some(ref key) = qdrant_config.api_key {
+            req = req.header("api-key", key);
+        }
+        let _ = rt.block_on(async { req.send().await })?;
+        println!("Deleted existing Qdrant collection '{}' for force-recreation.", qdrant_config.collection);
+    }
+
+    // 4. 建立 Qdrant 實體與非同步執行
+    println!("Connecting to Ollama and Qdrant to generate embeddings and index {} nodes...", graph_out.nodes.len());
+    let store = graphify_llm::memory::QdrantMemoryStore::new(config.clone());
+
+    rt.block_on(async {
+        store.ensure_collection().await?;
+        println!("Uploading nodes to Qdrant collection '{}'...", config.memory.long_term.qdrant.collection);
+        store.upsert_nodes(&graph_out.nodes).await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    println!("Successfully indexed codebase graph into Qdrant store!");
     Ok(())
 }
