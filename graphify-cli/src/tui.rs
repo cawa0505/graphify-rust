@@ -11,38 +11,32 @@
     clippy::unnested_or_patterns
 )]
 
+use crate::ui::{ActiveTab, layout, modal, theme};
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind, MouseButton},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use graphify_core::{GraphOutput, Node};
+use layout::{ActionTag, Flash, LogEntry};
+use modal::{ModalItem, ModalState};
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs},
-    Terminal,
 };
 use std::{
     io,
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveTab {
-    Explorer,
-    VisualGraph,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModalState {
-    None,
-    BfsTrace(Vec<String>),
-}
 
 pub struct App {
     pub graph: GraphOutput,
@@ -54,6 +48,8 @@ pub struct App {
     // TABS & MODALS
     pub active_tab: ActiveTab,
     pub modal_state: ModalState,
+    pub modal_hover: Option<usize>,
+    pub last_modal_list_area: Option<Rect>,
 
     // CANVAS VIEWPORT CONTROLS
     pub canvas_coords: crate::ui::canvas::NodeCoordinates,
@@ -66,6 +62,12 @@ pub struct App {
     pub last_tabs_area: Option<Rect>,
     pub last_list_area: Option<Rect>,
     pub drag_start: Option<(u16, u16)>,
+
+    // EVENT LOG & FOOTER FLASH
+    pub event_log: Vec<LogEntry>,
+    pub log_state: ListState,
+    pub flash: Flash,
+    pub last_log: Option<Instant>,
 }
 
 impl App {
@@ -89,6 +91,8 @@ impl App {
             input_mode: false,
             active_tab: ActiveTab::Explorer,
             modal_state: ModalState::None,
+            modal_hover: None,
+            last_modal_list_area: None,
             canvas_coords,
             pan_x: 0.0,
             pan_y: 0.0,
@@ -97,6 +101,204 @@ impl App {
             last_tabs_area: None,
             last_list_area: None,
             drag_start: None,
+            event_log: Vec::new(),
+            log_state: ListState::default(),
+            flash: Flash::default(),
+            last_log: None,
+        }
+    }
+
+    /// 追加事件日誌並自動滾動至最新一筆
+    fn log(&mut self, text: impl Into<String>, fg: Color) {
+        let entry = LogEntry::new(text, fg);
+        layout::push_log(&mut self.event_log, entry);
+        self.log_state
+            .select(Some(self.event_log.len().saturating_sub(1)));
+    }
+
+    /// 高頻事件 (平移/縮放) 節流紀錄，避免日誌被刷爆
+    fn log_throttled(&mut self, text: impl Into<String>, fg: Color) {
+        if self
+            .last_log
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(120))
+        {
+            return;
+        }
+        self.last_log = Some(Instant::now());
+        self.log(text, fg);
+    }
+
+    fn open_bfs_modal(&mut self) {
+        let trace = self.compute_bfs_trace();
+        let mut items = Vec::with_capacity(trace.len() + 1);
+        items.push(ModalItem::new(
+            "── BFS Path Steps (depth ≤ 3) ──",
+            theme::MAUVE,
+        ));
+        if trace.is_empty() {
+            items.push(ModalItem::new(
+                "No call path found from this node.",
+                theme::SUBTLE,
+            ));
+        } else {
+            for (i, step) in trace.iter().enumerate() {
+                items.push(ModalItem::new(
+                    format!(" {}. {}", i + 1, step),
+                    theme::GREEN,
+                ));
+            }
+        }
+        self.modal_state = ModalState::BfsTrace(items);
+        self.modal_hover = Some(0);
+        self.flash.trigger(ActionTag::Trace);
+        self.log("Keyboard: 't' → BFS Trace modal", theme::GOLD);
+    }
+
+    fn open_relations_modal(&mut self) {
+        let items = self.build_relations_items();
+        let label = self
+            .selected_node()
+            .map(|n| n.label.clone())
+            .unwrap_or_default();
+        self.modal_state = ModalState::Relations(items);
+        self.modal_hover = Some(0);
+        self.flash.trigger(ActionTag::Inspect);
+        self.log(format!("Right-Click: Inspect '{label}'"), theme::GOLD);
+    }
+
+    /// 從選中節點建構 Outgoing / Incoming 關係列表
+    fn build_relations_items(&self) -> Vec<ModalItem> {
+        let mut items = Vec::new();
+        let Some(node) = self.selected_node() else {
+            items.push(ModalItem::new("No node selected.", theme::SUBTLE));
+            return items;
+        };
+
+        let mut outgoing = Vec::new();
+        let mut incoming = Vec::new();
+        for edge in &self.graph.edges {
+            if edge.source == node.id {
+                outgoing.push(edge);
+            } else if edge.target == node.id {
+                incoming.push(edge);
+            }
+        }
+
+        if outgoing.is_empty() {
+            items.push(ModalItem::new("── Outgoing Calls: none ──", theme::SUBTLE));
+        } else {
+            items.push(ModalItem::new(
+                format!("── Outgoing Calls / References ({}) ──", outgoing.len()),
+                theme::GOLD,
+            ));
+            for edge in outgoing {
+                items.push(ModalItem::new(
+                    format!(" ➔ {} ({})", edge.target.0, edge.relation),
+                    theme::TEXT,
+                ));
+            }
+        }
+
+        if incoming.is_empty() {
+            items.push(ModalItem::new("── Incoming Calls: none ──", theme::SUBTLE));
+        } else {
+            items.push(ModalItem::new(
+                format!("── Incoming Calls / References ({}) ──", incoming.len()),
+                theme::MAUVE,
+            ));
+            for edge in incoming {
+                items.push(ModalItem::new(
+                    format!(" ⇠ {} ({})", edge.source.0, edge.relation),
+                    theme::BLUE,
+                ));
+            }
+        }
+        items
+    }
+
+    fn modal_next(&mut self) {
+        let len = self.modal_state.len();
+        if len == 0 {
+            return;
+        }
+        self.modal_hover = Some(
+            self.modal_hover
+                .map_or(0, |h| if h + 1 >= len { 0 } else { h + 1 }),
+        );
+        self.flash.trigger(ActionTag::Nav);
+    }
+
+    fn modal_prev(&mut self) {
+        let len = self.modal_state.len();
+        if len == 0 {
+            return;
+        }
+        self.modal_hover = Some(
+            self.modal_hover
+                .map_or(0, |h| if h == 0 { len - 1 } else { h - 1 }),
+        );
+        self.flash.trigger(ActionTag::Nav);
+    }
+
+    fn close_modal(&mut self) {
+        self.modal_state = ModalState::None;
+        self.modal_hover = None;
+        self.last_modal_list_area = None;
+    }
+
+    /// 畫布座標命中測試：回傳最接近節點的 graph index (6.0*zoom 半徑內)
+    fn hit_test_canvas(&self, click_col: u16, click_row: u16) -> Option<usize> {
+        let canvas_area = self.last_canvas_area?;
+        if click_row < canvas_area.y || click_row >= canvas_area.y + canvas_area.height {
+            return None;
+        }
+        if click_col < canvas_area.x || click_col >= canvas_area.x + canvas_area.width {
+            return None;
+        }
+
+        let w_ratio = f64::from(click_col - canvas_area.x) / f64::from(canvas_area.width);
+        let h_ratio = f64::from(click_row - canvas_area.y) / f64::from(canvas_area.height);
+
+        let x_min = -60.0 * self.zoom + self.pan_x;
+        let x_max = 60.0 * self.zoom + self.pan_x;
+        let y_min = -30.0 * self.zoom + self.pan_y;
+        let y_max = 30.0 * self.zoom + self.pan_y;
+
+        let clicked_x = x_min + w_ratio * (x_max - x_min);
+        let clicked_y = y_max - h_ratio * (y_max - y_min);
+
+        let mut closest_node_idx = None;
+        let mut min_dist = 6.0 * self.zoom;
+
+        for &idx in &self.filtered_nodes {
+            if let Some(node) = self.graph.nodes.get(idx) {
+                if let Some(&(nx, ny)) = self.canvas_coords.coords.get(&node.id) {
+                    let dist = (clicked_x - nx).hypot(clicked_y - ny);
+                    if dist < min_dist {
+                        min_dist = dist;
+                        closest_node_idx = Some(idx);
+                    }
+                }
+            }
+        }
+        closest_node_idx
+    }
+
+    /// Modal 開啟時，依據滑鼠位置更新懸停項目
+    fn update_modal_hover(&mut self, row: u16, col: u16) {
+        if matches!(self.modal_state, ModalState::None) {
+            return;
+        }
+        match self.last_modal_list_area {
+            Some(r) if row >= r.y && row < r.y + r.height && col >= r.x && col < r.x + r.width => {
+                let idx = (row - r.y) as usize;
+                self.modal_hover = if idx < self.modal_state.len() {
+                    Some(idx)
+                } else {
+                    None
+                };
+            }
+            _ => self.modal_hover = None,
         }
     }
 
@@ -128,7 +330,8 @@ impl App {
 
     pub fn update_selected_coords(&mut self) {
         if let Some(node) = self.selected_node() {
-            self.canvas_coords = crate::ui::canvas::NodeCoordinates::compute(&self.graph, Some(&node.id));
+            self.canvas_coords =
+                crate::ui::canvas::NodeCoordinates::compute(&self.graph, Some(&node.id));
         }
     }
 
@@ -180,15 +383,17 @@ impl App {
     #[must_use]
     pub fn compute_bfs_trace(&self) -> Vec<String> {
         if let Some(start_node) = self.selected_node() {
-            // 使用核心圖引擎構造有向圖
-            if let Ok((graph, node_map)) = graphify_core::build_graph(&self.graph.nodes, &self.graph.edges) {
-                // 呼叫核心 BFS 遍歷，獲取最大深度為 3 的有向子圖
-                if let Ok(sub_graph) = graphify_core::query_bfs(&graph, &node_map, &start_node.id, 3) {
-                    let mut trace = sub_graph.nodes
+            if let Ok((graph, node_map)) =
+                graphify_core::build_graph(&self.graph.nodes, &self.graph.edges)
+            {
+                if let Ok(sub_graph) =
+                    graphify_core::query_bfs(&graph, &node_map, &start_node.id, 3)
+                {
+                    let mut trace = sub_graph
+                        .nodes
                         .iter()
                         .map(|n| format!("{}:{}", n.kind, n.label))
                         .collect::<Vec<String>>();
-                    // 保持追蹤鏈在彈窗內的緊湊呈現 (最多 6 個節點)
                     trace.truncate(6);
                     return trace;
                 }
@@ -240,536 +445,642 @@ fn run_loop<B: ratatui::backend::Backend + std::io::Write>(
     loop {
         terminal.draw(|f| draw_ui(f, app))?;
 
-        if event::poll(Duration::from_millis(50))? {
+        // 16ms 輪詢 = 60 FPS 渲染節奏
+        if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
-                    // 若當前有開啟 Modal，僅接受關閉 Modal 的按鍵
-                    if let ModalState::BfsTrace(_) = app.modal_state {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Char('c') => {
-                                app.modal_state = ModalState::None;
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    if app.input_mode {
-                        match key.code {
-                            KeyCode::Enter | KeyCode::Esc => {
-                                app.input_mode = false;
-                            }
-                            KeyCode::Char(c) => {
-                                app.search_query.push(c);
-                                app.filter_nodes();
-                            }
-                            KeyCode::Backspace => {
-                                app.search_query.pop();
-                                app.filter_nodes();
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Char('q') => {
-                                return Ok(());
-                            }
-                            // 切換分頁
-                            KeyCode::Tab => {
-                                app.active_tab = match app.active_tab {
-                                    ActiveTab::Explorer => ActiveTab::VisualGraph,
-                                    ActiveTab::VisualGraph => ActiveTab::Explorer,
-                                };
-                            }
-                            KeyCode::Char('1') => {
-                                app.active_tab = ActiveTab::Explorer;
-                            }
-                            KeyCode::Char('2') => {
-                                app.active_tab = ActiveTab::VisualGraph;
-                            }
-                            // 觸發 BFS 追蹤鏈 Modal
-                            KeyCode::Char('t') | KeyCode::Char('T') => {
-                                let trace = app.compute_bfs_trace();
-                                app.modal_state = ModalState::BfsTrace(trace);
-                            }
-                            // 一般節點導航 (僅在 Explorer 分頁生效)
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                if app.active_tab == ActiveTab::Explorer {
-                                    app.next();
-                                } else {
-                                    // Visual Graph 平移向下
-                                    app.pan_y -= 2.0 * app.zoom;
-                                }
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                if app.active_tab == ActiveTab::Explorer {
-                                    app.previous();
-                                } else {
-                                    // Visual Graph 平移向上
-                                    app.pan_y += 2.0 * app.zoom;
-                                }
-                            }
-                            KeyCode::Char('h') | KeyCode::Left => {
-                                if app.active_tab == ActiveTab::VisualGraph {
-                                    // Visual Graph 平移向左
-                                    app.pan_x -= 4.0 * app.zoom;
-                                }
-                            }
-                            KeyCode::Char('l') | KeyCode::Right => {
-                                if app.active_tab == ActiveTab::VisualGraph {
-                                    // Visual Graph 平移向右
-                                    app.pan_x += 4.0 * app.zoom;
-                                }
-                            }
-                            // 縮放與重設
-                            KeyCode::Char('+') | KeyCode::Char('=') => {
-                                if app.active_tab == ActiveTab::VisualGraph {
-                                    app.zoom = (app.zoom - 0.1).max(0.2); // 放大：縮小 bounds
-                                }
-                            }
-                            KeyCode::Char('-') => {
-                                if app.active_tab == ActiveTab::VisualGraph {
-                                    app.zoom = (app.zoom + 0.1).min(3.0); // 縮小：擴大 bounds
-                                }
-                            }
-                            KeyCode::Char('r') | KeyCode::Char('R') => {
-                                if app.active_tab == ActiveTab::VisualGraph {
-                                    app.pan_x = 0.0;
-                                    app.pan_y = 0.0;
-                                    app.zoom = 1.0;
-                                }
-                            }
-                            KeyCode::Char('/') => {
-                                if app.active_tab == ActiveTab::Explorer {
-                                    app.input_mode = true;
-                                }
-                            }
-                            KeyCode::Char('c') | KeyCode::Esc => {
-                                if !app.search_query.is_empty() {
-                                    app.search_query.clear();
-                                    app.filter_nodes();
-                                }
-                            }
-                            KeyCode::Char('g') | KeyCode::Enter => {
-                                if let Some(node) = app.selected_node() {
-                                    let file_path = &node.source_file;
-                                    let line = node.start_line;
-
-                                    // 還原終端機以啟用系統預設編輯器
-                                    disable_raw_mode()?;
-                                    execute!(
-                                        terminal.backend_mut(),
-                                        LeaveAlternateScreen,
-                                        DisableMouseCapture
-                                    )?;
-                                    terminal.show_cursor()?;
-
-                                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                                    let mut cmd = Command::new(&editor);
-                                    if editor.contains("vi") || editor.contains("nvim") {
-                                        cmd.arg(format!("+{line}"));
-                                    }
-                                    let _ = cmd.arg(file_path).status();
-
-                                    // 重新載入 TUI
-                                    enable_raw_mode()?;
-                                    execute!(
-                                        terminal.backend_mut(),
-                                        EnterAlternateScreen,
-                                        EnableMouseCapture
-                                    )?;
-                                    terminal.clear()?;
-                                }
-                            }
-                            _ => {}
-                        }
+                    if handle_key(terminal, app, key)? {
+                        return Ok(());
                     }
                 }
-                Event::Mouse(mouse_event) => {
-                    let click_col = mouse_event.column;
-                    let click_row = mouse_event.row;
-
-                    match mouse_event.kind {
-                        MouseEventKind::ScrollUp => {
-                            if app.active_tab == ActiveTab::VisualGraph {
-                                app.zoom = (app.zoom - 0.05).max(0.1); // ponytail: 滾輪向上放大（調整視窗投射邊界縮小 = Zoom In 放大效果）
-                            }
-                        }
-                        MouseEventKind::ScrollDown => {
-                            if app.active_tab == ActiveTab::VisualGraph {
-                                app.zoom = (app.zoom + 0.05).min(5.0); // ponytail: 滾輪向下縮小（調整視窗投射邊界擴大 = Zoom Out 縮小效果）
-                            }
-                        }
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            // 1. 記錄拖曳起點
-                            if app.active_tab == ActiveTab::VisualGraph {
-                                app.drag_start = Some((click_col, click_row));
-                            }
-
-                            // 2. 偵測點擊 Tab 切換 (動態區域)
-                            if let Some(tabs_area) = app.last_tabs_area {
-                                if click_row == tabs_area.y + 1 {
-                                    let half_width = tabs_area.width / 2;
-                                    if click_col >= tabs_area.x && click_col < tabs_area.x + half_width {
-                                        app.active_tab = ActiveTab::Explorer;
-                                    } else if click_col >= tabs_area.x + half_width && click_col < tabs_area.x + tabs_area.width {
-                                        app.active_tab = ActiveTab::VisualGraph;
-                                    }
-                                }
-                            }
-
-                            // 3. 偵測點擊 Explorer 節點列表 (動態區域)
-                            if app.active_tab == ActiveTab::Explorer {
-                                if let Some(list_area) = app.last_list_area {
-                                    let list_top = list_area.y + 1;
-                                    let list_bottom = list_area.y + list_area.height - 1;
-                                    if click_row >= list_top && click_row < list_bottom && click_col >= list_area.x && click_col < list_area.x + list_area.width {
-                                        let clicked_idx = (click_row - list_top) as usize;
-                                        if clicked_idx < app.filtered_nodes.len() {
-                                            app.list_state.select(Some(clicked_idx));
-                                            app.update_selected_coords();
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 4. 偵測點擊 Visual Graph 節點選擇 (動態畫布)
-                            if app.active_tab == ActiveTab::VisualGraph {
-                                if let Some(canvas_area) = app.last_canvas_area {
-                                    let canvas_top = canvas_area.y;
-                                    let canvas_bottom = canvas_area.y + canvas_area.height;
-                                    if click_row >= canvas_top && click_row < canvas_bottom && click_col >= canvas_area.x && click_col < canvas_area.x + canvas_area.width {
-                                        let w_ratio = f64::from(click_col - canvas_area.x) / f64::from(canvas_area.width);
-                                        let h_ratio = f64::from(click_row - canvas_top) / f64::from(canvas_area.height);
-
-                                        let x_min = -60.0 * app.zoom + app.pan_x;
-                                        let x_max = 60.0 * app.zoom + app.pan_x;
-                                        let y_min = -30.0 * app.zoom + app.pan_y;
-                                        let y_max = 30.0 * app.zoom + app.pan_y;
-
-                                        let clicked_x = x_min + w_ratio * (x_max - x_min);
-                                        let clicked_y = y_max - h_ratio * (y_max - y_min);
-
-                                        let mut closest_node_idx = None;
-                                        let mut min_dist = 6.0 * app.zoom;
-
-                                        for &idx in &app.filtered_nodes {
-                                            if let Some(node) = app.graph.nodes.get(idx) {
-                                                if let Some(&(nx, ny)) = app.canvas_coords.coords.get(&node.id) {
-                                                    let dist = (clicked_x - nx).hypot(clicked_y - ny);
-                                                    if dist < min_dist {
-                                                        min_dist = dist;
-                                                        closest_node_idx = Some(idx);
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(target_idx) = closest_node_idx {
-                                            if let Some(list_pos) = app.filtered_nodes.iter().position(|&node_idx| node_idx == target_idx) {
-                                                app.list_state.select(Some(list_pos));
-                                                app.update_selected_coords();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        MouseEventKind::Drag(MouseButton::Left) => {
-                            if app.active_tab == ActiveTab::VisualGraph {
-                                if let Some((start_col, start_row)) = app.drag_start {
-                                    let dc = f64::from(click_col) - f64::from(start_col);
-                                    let dr = f64::from(click_row) - f64::from(start_row);
-
-                                    // 平曳視角
-                                    let scale = 0.5 * app.zoom;
-                                    app.pan_x -= dc * scale;
-                                    app.pan_y += dr * scale;
-
-                                    app.drag_start = Some((click_col, click_row));
-                                }
-                            }
-                        }
-                        MouseEventKind::Up(MouseButton::Left) => {
-                            app.drag_start = None;
-                        }
-                        MouseEventKind::Down(MouseButton::Right) | MouseEventKind::Up(MouseButton::Right) => {
-                            // 右鍵點擊：快速聚焦並開啟關係 Modal
-                            if app.active_tab == ActiveTab::Explorer {
-                                if let Some(list_area) = app.last_list_area {
-                                    let list_top = list_area.y + 1;
-                                    let list_bottom = list_area.y + list_area.height - 1;
-                                    if click_row >= list_top && click_row < list_bottom && click_col >= list_area.x && click_col < list_area.x + list_area.width {
-                                        let clicked_idx = (click_row - list_top) as usize;
-                                        if clicked_idx < app.filtered_nodes.len() {
-                                            app.list_state.select(Some(clicked_idx));
-                                            app.update_selected_coords();
-                                            let trace = app.compute_bfs_trace();
-                                            app.modal_state = ModalState::BfsTrace(trace);
-                                        }
-                                    }
-                                }
-                            } else if app.active_tab == ActiveTab::VisualGraph {
-                                if let Some(canvas_area) = app.last_canvas_area {
-                                    let canvas_top = canvas_area.y;
-                                    let canvas_bottom = canvas_area.y + canvas_area.height;
-                                    if click_row >= canvas_top && click_row < canvas_bottom && click_col >= canvas_area.x && click_col < canvas_area.x + canvas_area.width {
-                                        let w_ratio = f64::from(click_col - canvas_area.x) / f64::from(canvas_area.width);
-                                        let h_ratio = f64::from(click_row - canvas_top) / f64::from(canvas_area.height);
-
-                                        let x_min = -60.0 * app.zoom + app.pan_x;
-                                        let x_max = 60.0 * app.zoom + app.pan_x;
-                                        let y_min = -30.0 * app.zoom + app.pan_y;
-                                        let y_max = 30.0 * app.zoom + app.pan_y;
-
-                                        let clicked_x = x_min + w_ratio * (x_max - x_min);
-                                        let clicked_y = y_max - h_ratio * (y_max - y_min);
-
-                                        let mut closest_node_idx = None;
-                                        let mut min_dist = 6.0 * app.zoom;
-
-                                        for &idx in &app.filtered_nodes {
-                                            if let Some(node) = app.graph.nodes.get(idx) {
-                                                if let Some(&(nx, ny)) = app.canvas_coords.coords.get(&node.id) {
-                                                    let dist = (clicked_x - nx).hypot(clicked_y - ny);
-                                                    if dist < min_dist {
-                                                        min_dist = dist;
-                                                        closest_node_idx = Some(idx);
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(target_idx) = closest_node_idx {
-                                            if let Some(list_pos) = app.filtered_nodes.iter().position(|&node_idx| node_idx == target_idx) {
-                                                app.list_state.select(Some(list_pos));
-                                                app.update_selected_coords();
-                                                let trace = app.compute_bfs_trace();
-                                                app.modal_state = ModalState::BfsTrace(trace);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                Event::Mouse(mouse) => handle_mouse(app, mouse),
                 _ => {}
             }
         }
     }
 }
 
+/// 回傳 `true` 表示要求退出
+#[allow(clippy::too_many_lines)]
+fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<bool> {
+    // 若當前有開啟 Modal，僅接受關閉/導航按鍵
+    if !matches!(app.modal_state, ModalState::None) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('c') => {
+                app.close_modal();
+                app.log("Modal closed", theme::SUBTLE);
+            }
+            KeyCode::Char('j') | KeyCode::Down => app.modal_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.modal_prev(),
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    if app.input_mode {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                app.input_mode = false;
+                app.log("Filter locked", theme::CYAN);
+            }
+            KeyCode::Char(c) => {
+                app.search_query.push(c);
+                app.filter_nodes();
+            }
+            KeyCode::Backspace => {
+                app.search_query.pop();
+                app.filter_nodes();
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Char('q') => {
+            app.flash.trigger(ActionTag::Quit);
+            app.log("Keyboard: 'q' Quit", theme::RED);
+            return Ok(true);
+        }
+        // 切換分頁
+        KeyCode::Tab => {
+            app.active_tab = match app.active_tab {
+                ActiveTab::Explorer => ActiveTab::VisualGraph,
+                ActiveTab::VisualGraph => ActiveTab::Explorer,
+            };
+            app.flash.trigger(ActionTag::Nav);
+            app.log("Keyboard: [Tab] switch view", theme::CYAN);
+        }
+        KeyCode::Char('1') => {
+            app.active_tab = ActiveTab::Explorer;
+            app.flash.trigger(ActionTag::Nav);
+            app.log("Keyboard: '1' → Explorer", theme::CYAN);
+        }
+        KeyCode::Char('2') => {
+            app.active_tab = ActiveTab::VisualGraph;
+            app.flash.trigger(ActionTag::Nav);
+            app.log("Keyboard: '2' → Visual Graph", theme::CYAN);
+        }
+        // 觸發 BFS 追蹤鏈 Modal
+        KeyCode::Char('t') | KeyCode::Char('T') => app.open_bfs_modal(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.active_tab == ActiveTab::Explorer {
+                app.next();
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: 'j' navigate down", theme::CYAN);
+            } else {
+                // Visual Graph 平移向下
+                app.pan_y -= 2.0 * app.zoom;
+                app.flash.trigger(ActionTag::Pan);
+                app.log_throttled("Keyboard: Pan down", theme::GREEN);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.active_tab == ActiveTab::Explorer {
+                app.previous();
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: 'k' navigate up", theme::CYAN);
+            } else {
+                // Visual Graph 平移向上
+                app.pan_y += 2.0 * app.zoom;
+                app.flash.trigger(ActionTag::Pan);
+                app.log_throttled("Keyboard: Pan up", theme::GREEN);
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.pan_x -= 4.0 * app.zoom;
+                app.flash.trigger(ActionTag::Pan);
+                app.log_throttled("Keyboard: Pan left", theme::GREEN);
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.pan_x += 4.0 * app.zoom;
+                app.flash.trigger(ActionTag::Pan);
+                app.log_throttled("Keyboard: Pan right", theme::GREEN);
+            }
+        }
+        // 縮放與重設
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.zoom = (app.zoom - 0.1).max(0.2);
+                app.flash.trigger(ActionTag::Zoom);
+                app.log_throttled("Keyboard: Zoom In", theme::CYAN);
+            }
+        }
+        KeyCode::Char('-') => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.zoom = (app.zoom + 0.1).min(3.0);
+                app.flash.trigger(ActionTag::Zoom);
+                app.log_throttled("Keyboard: Zoom Out", theme::CYAN);
+            }
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.pan_x = 0.0;
+                app.pan_y = 0.0;
+                app.zoom = 1.0;
+                app.flash.trigger(ActionTag::Reset);
+                app.log("Keyboard: 'r' reset view", theme::CYAN);
+            }
+        }
+        KeyCode::Char('/') => {
+            if app.active_tab == ActiveTab::Explorer {
+                app.input_mode = true;
+                app.flash.trigger(ActionTag::Filter);
+                app.log("Keyboard: '/' filter mode", theme::GOLD);
+            }
+        }
+        KeyCode::Char('c') | KeyCode::Esc => {
+            if !app.search_query.is_empty() {
+                app.search_query.clear();
+                app.filter_nodes();
+                app.log("Search cleared", theme::SUBTLE);
+            }
+        }
+        KeyCode::Char('g') | KeyCode::Enter => {
+            if let Some(node) = app.selected_node() {
+                let file_path = node.source_file.clone();
+                let line = node.start_line;
+                app.flash.trigger(ActionTag::Edit);
+                app.log(
+                    format!("Keyboard: 'g' open editor → {file_path}"),
+                    theme::GREEN,
+                );
+
+                // 還原終端機以啟用系統預設編輯器
+                disable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
+                terminal.show_cursor()?;
+
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                let mut cmd = Command::new(&editor);
+                if editor.contains("vi") || editor.contains("nvim") {
+                    cmd.arg(format!("+{line}"));
+                }
+                let _ = cmd.arg(&file_path).status();
+
+                // 重新載入 TUI
+                enable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableMouseCapture
+                )?;
+                terminal.clear()?;
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    let click_col = mouse.column;
+    let click_row = mouse.row;
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.zoom = (app.zoom - 0.05).max(0.1); // ponytail: 滾輪向上放大（投射邊界縮小 = Zoom In）
+                app.flash.trigger(ActionTag::Zoom);
+                app.log_throttled("Mouse Scroll: Zoom In", theme::CYAN);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.zoom = (app.zoom + 0.05).min(5.0); // ponytail: 滾輪向下縮小（投射邊界擴大 = Zoom Out）
+                app.flash.trigger(ActionTag::Zoom);
+                app.log_throttled("Mouse Scroll: Zoom Out", theme::CYAN);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            // 1. 記錄拖曳起點
+            if app.active_tab == ActiveTab::VisualGraph {
+                app.drag_start = Some((click_col, click_row));
+            }
+
+            // 2. 偵測點擊 Tab 切換 (動態區域)
+            if let Some(tabs_area) = app.last_tabs_area {
+                if click_row == tabs_area.y + 1 {
+                    let half_width = tabs_area.width / 2;
+                    if click_col >= tabs_area.x && click_col < tabs_area.x + tabs_area.width {
+                        let tab_name = if click_col < tabs_area.x + half_width {
+                            "Explorer"
+                        } else {
+                            "VisualGraph"
+                        };
+                        app.active_tab = if click_col < tabs_area.x + half_width {
+                            ActiveTab::Explorer
+                        } else {
+                            ActiveTab::VisualGraph
+                        };
+                        app.log(
+                            format!("Mouse Click: x={click_col}, y={click_row} [Tab: {tab_name}]"),
+                            theme::CYAN,
+                        );
+                    }
+                }
+            }
+
+            // 3. 偵測點擊 Explorer 節點列表 (動態區域)
+            if app.active_tab == ActiveTab::Explorer {
+                if let Some(list_area) = app.last_list_area {
+                    let list_top = list_area.y + 1;
+                    let list_bottom = list_area.y + list_area.height - 1;
+                    if click_row >= list_top
+                        && click_row < list_bottom
+                        && click_col >= list_area.x
+                        && click_col < list_area.x + list_area.width
+                    {
+                        let clicked_idx = (click_row - list_top) as usize;
+                        if clicked_idx < app.filtered_nodes.len() {
+                            let label = app
+                                .filtered_nodes
+                                .get(clicked_idx)
+                                .and_then(|&i| app.graph.nodes.get(i))
+                                .map(|n| n.label.clone())
+                                .unwrap_or_default();
+                            app.list_state.select(Some(clicked_idx));
+                            app.update_selected_coords();
+                            app.flash.trigger(ActionTag::Nav);
+                            app.log(
+                                format!(
+                                    "Mouse Click: x={click_col}, y={click_row} [Node: {label}]"
+                                ),
+                                theme::CYAN,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // 4. 偵測點擊 Visual Graph 節點選擇 (動態畫布)
+            if app.active_tab == ActiveTab::VisualGraph {
+                match app.hit_test_canvas(click_col, click_row) {
+                    Some(target_idx) => {
+                        if let Some(list_pos) =
+                            app.filtered_nodes.iter().position(|&n| n == target_idx)
+                        {
+                            app.list_state.select(Some(list_pos));
+                            app.update_selected_coords();
+                            app.flash.trigger(ActionTag::Select);
+                            let label = app
+                                .graph
+                                .nodes
+                                .get(target_idx)
+                                .map(|n| n.label.clone())
+                                .unwrap_or_default();
+                            app.log(
+                                format!(
+                                    "Mouse Click: x={click_col}, y={click_row} [Node: {label}]"
+                                ),
+                                theme::GREEN,
+                            );
+                        }
+                    }
+                    None => {
+                        app.log(
+                            format!(
+                                "Mouse Click: x={click_col}, y={click_row} [Canvas: empty space]"
+                            ),
+                            theme::SUBTLE,
+                        );
+                    }
+                }
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.active_tab == ActiveTab::VisualGraph {
+                if let Some((start_col, start_row)) = app.drag_start {
+                    let dc = f64::from(click_col) - f64::from(start_col);
+                    let dr = f64::from(click_row) - f64::from(start_row);
+
+                    // 平曳視角
+                    let scale = 0.5 * app.zoom;
+                    app.pan_x -= dc * scale;
+                    app.pan_y += dr * scale;
+
+                    app.drag_start = Some((click_col, click_row));
+                    app.flash.trigger(ActionTag::Pan);
+                    app.log_throttled(format!("Mouse Pan: dx={dc:.0}, dy={dr:.0}"), theme::GREEN);
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.drag_start = None;
+        }
+        MouseEventKind::Down(MouseButton::Right) | MouseEventKind::Up(MouseButton::Right) => {
+            // 右鍵點擊：快速聚焦並開啟關係檢查器 Modal
+            if app.active_tab == ActiveTab::Explorer {
+                if let Some(list_area) = app.last_list_area {
+                    let list_top = list_area.y + 1;
+                    let list_bottom = list_area.y + list_area.height - 1;
+                    if click_row >= list_top
+                        && click_row < list_bottom
+                        && click_col >= list_area.x
+                        && click_col < list_area.x + list_area.width
+                    {
+                        let clicked_idx = (click_row - list_top) as usize;
+                        if clicked_idx < app.filtered_nodes.len() {
+                            app.list_state.select(Some(clicked_idx));
+                            app.update_selected_coords();
+                            app.open_relations_modal();
+                        }
+                    }
+                }
+            } else if app.active_tab == ActiveTab::VisualGraph {
+                if let Some(target_idx) = app.hit_test_canvas(click_col, click_row) {
+                    if let Some(list_pos) = app.filtered_nodes.iter().position(|&n| n == target_idx)
+                    {
+                        app.list_state.select(Some(list_pos));
+                        app.update_selected_coords();
+                        app.open_relations_modal();
+                    }
+                }
+            }
+        }
+        MouseEventKind::Moved => app.update_modal_hover(click_row, click_col),
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Tab Bar / Search Bar
-            Constraint::Min(10),   // Main View Panel
-            Constraint::Length(3), // Status Bar
-        ])
-        .split(f.area());
+    let chrome = layout::split(f.area());
 
-    // 1. Tab Bar 導航列繪製
+    // 1. Tab 列導航
     let tab_titles = vec![" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
     let active_idx = match app.active_tab {
         ActiveTab::Explorer => 0,
         ActiveTab::VisualGraph => 1,
     };
     let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::ALL).title(" 🧭 Graphify TUI Navigation "))
-        .select(active_idx)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
-    f.render_widget(tabs, chunks[0]);
-    app.last_tabs_area = Some(chunks[0]);
-
-    // 2. 依據目前分頁繪製主面板 (Main View Panel)
-    match app.active_tab {
-        ActiveTab::Explorer => {
-            // Tab 1: 傳統的雙欄代碼與關係瀏覽器
-            let content_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(5)])
-                .split(chunks[1]);
-
-            // 搜尋欄
-            let search_style = if app.input_mode {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default()
-            };
-            let search_text = if app.search_query.is_empty() {
-                if app.input_mode {
-                    "Type to filter... (Press Enter/Esc to lock)"
-                } else {
-                    "Press [/] to filter AST symbols..."
-                }
-            } else {
-                &app.search_query
-            };
-            let search_p = Paragraph::new(search_text)
-                .style(search_style)
-                .block(Block::default().borders(Borders::ALL).title(" 🔍 Search / Filter "));
-            f.render_widget(search_p, content_chunks[0]);
-
-            // 雙欄
-            let main_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(content_chunks[1]);
-
-            // 左側：節點列表
-            let list_items: Vec<ListItem> = app
-                .filtered_nodes
-                .iter()
-                .filter_map(|&idx| app.graph.nodes.get(idx))
-                .map(|node| {
-                    let icon = match node.kind.as_str() {
-                        "struct" | "class" => "[S]",
-                        "interface" | "trait" => "[I]",
-                        "function" | "fn" | "method" => "[F]",
-                        "module" | "file" => "[M]",
-                        _ => "[N]",
-                    };
-                    let text = format!("{} {} ({})", icon, node.label, node.kind);
-                    ListItem::new(text).style(Style::default().fg(Color::White))
-                })
-                .collect();
-
-            let list_title = format!(" 🌲 Nodes List ({}/{}) ", app.filtered_nodes.len(), app.graph.nodes.len());
-            let list_widget = List::new(list_items)
-                .block(Block::default().borders(Borders::ALL).title(list_title))
-                .highlight_style(
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::SURFACE_HI))
+                .title(Line::from(Span::styled(
+                    " 🧭 Graphify TUI Navigation ",
                     Style::default()
-                        .bg(Color::Cyan)
-                        .fg(Color::Black)
+                        .fg(theme::MAUVE)
                         .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol(" ➔ ");
-            f.render_stateful_widget(list_widget, main_chunks[0], &mut app.list_state);
-            app.last_list_area = Some(main_chunks[0]);
+                ))),
+        )
+        .select(active_idx)
+        .style(Style::default().fg(theme::SUBTLE))
+        .highlight_style(
+            Style::default()
+                .fg(theme::CYAN)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_widget(tabs, chrome.tabs);
+    app.last_tabs_area = Some(chrome.tabs);
 
-            // 右側：詳細 Node Inspector
-            let mut inspector_lines = Vec::new();
-            if let Some(node) = app.selected_node() {
-                inspector_lines.push(Line::from(vec![
-                    Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&node.id.0, Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)),
-                ]));
-                inspector_lines.push(Line::from(vec![
-                    Span::styled("Label: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&node.label, Style::default().fg(Color::White)),
-                ]));
-                inspector_lines.push(Line::from(vec![
-                    Span::styled("Kind: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&node.kind, Style::default().fg(Color::Cyan)),
-                ]));
-                inspector_lines.push(Line::from(vec![
-                    Span::styled("File: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{}:{}", node.source_file, node.start_line), Style::default().fg(Color::Green)),
-                ]));
-                if let Some(ref desc) = node.description {
-                    inspector_lines.push(Line::from(""));
-                    inspector_lines.push(Line::from(vec![
-                        Span::styled("Description: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(desc, Style::default().fg(Color::White)),
-                    ]));
-                }
-
-                let mut outgoing_lines = Vec::new();
-                let mut incoming_lines = Vec::new();
-                for edge in &app.graph.edges {
-                    if edge.source == node.id {
-                        let text = format!("  ➔ {} ({})", edge.target.0, edge.relation);
-                        outgoing_lines.push(Line::from(Span::styled(text, Style::default().fg(Color::White))));
-                    }
-                    if edge.target == node.id {
-                        let text = format!("  ⇠ {} ({})", edge.source.0, edge.relation);
-                        incoming_lines.push(Line::from(Span::styled(text, Style::default().fg(Color::White))));
-                    }
-                }
-
-                if !outgoing_lines.is_empty() {
-                    inspector_lines.push(Line::from(""));
-                    inspector_lines.push(Line::from(Span::styled("Outgoing Calls / References:", Style::default().fg(Color::Magenta))));
-                    for line in outgoing_lines.into_iter().take(10) {
-                        inspector_lines.push(line);
-                    }
-                }
-
-                if !incoming_lines.is_empty() {
-                    inspector_lines.push(Line::from(""));
-                    inspector_lines.push(Line::from(Span::styled("Incoming Calls / References:", Style::default().fg(Color::LightBlue))));
-                    for line in incoming_lines.into_iter().take(10) {
-                        inspector_lines.push(line);
-                    }
-                }
-            } else {
-                inspector_lines.push(Line::from("Select a node to inspect..."));
-            }
-
-            let inspector_p = Paragraph::new(inspector_lines)
-                .block(Block::default().borders(Borders::ALL).title(" 📝 Node Inspector "))
-                .wrap(ratatui::widgets::Wrap { trim: true });
-            f.render_widget(inspector_p, main_chunks[1]);
-        }
-        ActiveTab::VisualGraph => {
-            // Tab 2: 全螢幕 Canvas 關係圖繪製
-            let selected_id = app.selected_node().map(|n| &n.id);
-            let canvas_widget = crate::ui::canvas::create_canvas_widget(
-                &app.graph,
-                &app.canvas_coords,
-                selected_id,
-                app.pan_x,
-                app.pan_y,
-                app.zoom,
-            );
-            f.render_widget(canvas_widget, chunks[1]);
-            app.last_canvas_area = Some(chunks[1]);
-        }
+    // 2. 主視圖面板 (70%)
+    match app.active_tab {
+        ActiveTab::Explorer => draw_explorer(f, app, chrome.main),
+        ActiveTab::VisualGraph => draw_visual_graph(f, app, chrome.main),
     }
 
-    // 3. Status Bar 狀態列繪製 (Neovim/fzf 極致高對比色調設計)
-    let status_line = match app.active_tab {
-        ActiveTab::Explorer => Line::from(vec![
-            Span::styled(" [Tab]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" View ", Style::default().fg(Color::White)),
-            Span::styled(" [j/k]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" Nav ", Style::default().fg(Color::White)),
-            Span::styled(" [/]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" Filter ", Style::default().fg(Color::White)),
-            Span::styled(" [t/Right-Click]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" BFS Trace ", Style::default().fg(Color::White)),
-            Span::styled(" [g/Enter]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(" Code ", Style::default().fg(Color::White)),
-            Span::styled(" [q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(" Quit", Style::default().fg(Color::White)),
-        ]),
-        ActiveTab::VisualGraph => Line::from(vec![
-            Span::styled(" [Tab]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" View ", Style::default().fg(Color::White)),
-            Span::styled(" [Left-Click]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(" Select ", Style::default().fg(Color::White)),
-            Span::styled(" [Left-Drag/hjkl]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(" Pan ", Style::default().fg(Color::White)),
-            Span::styled(" [Scroll/+/-]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" Zoom ", Style::default().fg(Color::White)),
-            Span::styled(" [Right-Click/t]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" BFS Trace ", Style::default().fg(Color::White)),
-            Span::styled(" [r]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(" Reset ", Style::default().fg(Color::White)),
-            Span::styled(" [q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(" Quit", Style::default().fg(Color::White)),
-        ]),
+    // 3. 事件日誌面板 (30%)
+    layout::render_event_log(f, &app.event_log, &mut app.log_state, chrome.log);
+
+    // 4. 快捷鍵 Footer (藥丸按鈕)
+    layout::render_footer(f, app.active_tab, &app.flash, chrome.footer);
+
+    // 5. 浮動 Modal 疊加 (Clear + 亮紫邊框)
+    app.last_modal_list_area = modal::draw_modal(f, &app.modal_state, app.modal_hover, f.area());
+    app.flash.tick();
+}
+
+fn draw_visual_graph(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let selected_id = app.selected_node().map(|n| &n.id);
+    let canvas_widget = crate::ui::canvas::create_canvas_widget(
+        &app.graph,
+        &app.canvas_coords,
+        selected_id,
+        app.pan_x,
+        app.pan_y,
+        app.zoom,
+    );
+    f.render_widget(canvas_widget, area);
+    app.last_canvas_area = Some(area);
+    crate::ui::canvas::render_metrics_overlay(
+        f,
+        &app.graph,
+        app.selected_node(),
+        app.zoom,
+        app.pan_x,
+        app.pan_y,
+        area,
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+fn draw_explorer(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    // 搜尋欄 + 主內容
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    let search_border = if app.input_mode {
+        theme::CYAN
+    } else {
+        theme::SURFACE_HI
     };
-    let status_p = Paragraph::new(status_line).block(Block::default().borders(Borders::ALL));
-    f.render_widget(status_p, chunks[2]);
+    let search_fg = if app.input_mode {
+        theme::CYAN
+    } else {
+        theme::SUBTLE
+    };
+    let search_text = if app.search_query.is_empty() {
+        if app.input_mode {
+            "Type to filter... (Press Enter/Esc to lock)"
+        } else {
+            "Press [/] to filter AST symbols..."
+        }
+    } else {
+        &app.search_query
+    };
+    let search_p = Paragraph::new(search_text)
+        .style(Style::default().fg(search_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(search_border))
+                .title(Line::from(Span::styled(
+                    " 🔍 Search / Filter ",
+                    Style::default()
+                        .fg(theme::MAUVE)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+        );
+    f.render_widget(search_p, content_chunks[0]);
 
-    // 4. 若當前處於 BfsTrace Modal 狀態，繪製疊加置中彈窗！
-    if let ModalState::BfsTrace(ref trace_path) = app.modal_state {
-        crate::ui::modal::draw_bfs_modal(f, trace_path, f.area());
+    // 雙欄：節點列表 + 詳細 Inspector
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(content_chunks[1]);
+
+    // 左側：節點列表 (kind 圖示著色)
+    let list_items: Vec<ListItem> = app
+        .filtered_nodes
+        .iter()
+        .filter_map(|&idx| app.graph.nodes.get(idx))
+        .map(|node| {
+            let (icon, color) = match node.kind.as_str() {
+                "struct" | "class" => ("[S]", theme::GOLD),
+                "interface" | "trait" => ("[I]", theme::MAUVE),
+                "function" | "fn" | "method" => ("[F]", theme::GREEN),
+                "module" | "file" => ("[M]", theme::BLUE),
+                _ => ("[N]", theme::TEXT),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    icon,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(&node.label, Style::default().fg(theme::TEXT)),
+                Span::styled(
+                    format!(" ({})", node.kind),
+                    Style::default().fg(theme::SUBTLE),
+                ),
+            ]))
+        })
+        .collect();
+
+    let list_title = Line::from(vec![
+        Span::styled(
+            " 🌲 Nodes List ",
+            Style::default()
+                .fg(theme::GREEN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({}/{})", app.filtered_nodes.len(), app.graph.nodes.len()),
+            Style::default().fg(theme::SUBTLE),
+        ),
+    ]);
+    let list_widget = List::new(list_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::SURFACE_HI))
+                .title(list_title),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(theme::CYAN)
+                .fg(theme::BG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(" ▶ ");
+    f.render_stateful_widget(list_widget, main_chunks[0], &mut app.list_state);
+    app.last_list_area = Some(main_chunks[0]);
+
+    // 右側：詳細 Node Inspector
+    let mut inspector_lines = Vec::new();
+    if let Some(node) = app.selected_node() {
+        inspector_lines.push(Line::from(vec![
+            Span::styled("ID: ", Style::default().fg(theme::SUBTLE)),
+            Span::styled(
+                &node.id.0,
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(theme::GOLD),
+            ),
+        ]));
+        inspector_lines.push(Line::from(vec![
+            Span::styled("Label: ", Style::default().fg(theme::SUBTLE)),
+            Span::styled(&node.label, Style::default().fg(theme::TEXT)),
+        ]));
+        inspector_lines.push(Line::from(vec![
+            Span::styled("Kind: ", Style::default().fg(theme::SUBTLE)),
+            Span::styled(&node.kind, Style::default().fg(theme::CYAN)),
+        ]));
+        inspector_lines.push(Line::from(vec![
+            Span::styled("File: ", Style::default().fg(theme::SUBTLE)),
+            Span::styled(
+                format!("{}:{}", node.source_file, node.start_line),
+                Style::default().fg(theme::GREEN),
+            ),
+        ]));
+        if let Some(ref desc) = node.description {
+            inspector_lines.push(Line::from(""));
+            inspector_lines.push(Line::from(vec![
+                Span::styled("Description: ", Style::default().fg(theme::SUBTLE)),
+                Span::styled(desc, Style::default().fg(theme::TEXT)),
+            ]));
+        }
+
+        let mut outgoing_lines = Vec::new();
+        let mut incoming_lines = Vec::new();
+        for edge in &app.graph.edges {
+            if edge.source == node.id {
+                outgoing_lines.push(Line::from(Span::styled(
+                    format!("  ➔ {} ({})", edge.target.0, edge.relation),
+                    Style::default().fg(theme::TEXT),
+                )));
+            }
+            if edge.target == node.id {
+                incoming_lines.push(Line::from(Span::styled(
+                    format!("  ⇠ {} ({})", edge.source.0, edge.relation),
+                    Style::default().fg(theme::BLUE),
+                )));
+            }
+        }
+
+        if !outgoing_lines.is_empty() {
+            inspector_lines.push(Line::from(""));
+            inspector_lines.push(Line::from(Span::styled(
+                "Outgoing Calls / References:",
+                Style::default()
+                    .fg(theme::GOLD)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            inspector_lines.extend(outgoing_lines.into_iter().take(10));
+        }
+
+        if !incoming_lines.is_empty() {
+            inspector_lines.push(Line::from(""));
+            inspector_lines.push(Line::from(Span::styled(
+                "Incoming Calls / References:",
+                Style::default()
+                    .fg(theme::MAUVE)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            inspector_lines.extend(incoming_lines.into_iter().take(10));
+        }
+    } else {
+        inspector_lines.push(Line::from("Select a node to inspect..."));
     }
+
+    let inspector_p = Paragraph::new(inspector_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::SURFACE_HI))
+                .title(Line::from(Span::styled(
+                    " 📝 Node Inspector ",
+                    Style::default()
+                        .fg(theme::MAUVE)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+        )
+        .wrap(ratatui::widgets::Wrap { trim: true });
+    f.render_widget(inspector_p, main_chunks[1]);
 }
