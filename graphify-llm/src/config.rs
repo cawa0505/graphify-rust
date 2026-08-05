@@ -49,7 +49,7 @@ pub struct QdrantConfig {
 impl Default for QdrantConfig {
     fn default() -> Self {
         Self {
-            url: "http://localhost:6333".to_string(),
+            url: "http://192.168.77.185:6333".to_string(),
             api_key: None,
             collection: "graphify_memory".to_string(),
             distance: "Cosine".to_string(),
