@@ -9,6 +9,7 @@ pub enum ProviderType {
     Ollama,
     Gemini,
     OpenRouter,
+    OpenAI,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,9 +61,29 @@ impl Default for QdrantConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub vector_size: usize,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: "ollama".to_string(),
+            endpoint: "http://localhost:11434".to_string(),
+            model: "bge-m3".to_string(),
+            vector_size: 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongTermMemoryConfig {
     pub enabled: bool,
     pub provider: String,
+    pub embedding: EmbeddingConfig,
     pub qdrant: QdrantConfig,
 }
 
@@ -71,6 +92,7 @@ impl Default for LongTermMemoryConfig {
         Self {
             enabled: false,
             provider: "qdrant".to_string(),
+            embedding: EmbeddingConfig::default(),
             qdrant: QdrantConfig::default(),
         }
     }
@@ -86,6 +108,7 @@ pub struct MemoryConfig {
 pub struct LLMConfig {
     pub providers: Vec<Provider>,
     pub extraction: ExtractionConfig,
+    #[serde(default)]
     pub api_keys: Vec<String>, // Flattened keys for rotation
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -107,6 +130,7 @@ impl LLMConfig {
     ///
     /// # Errors
     /// Returns an error if no configuration file could be found or parsed.
+    #[allow(clippy::too_many_lines)] // ponytail: file reading and legacy JSON migration paths are naturally long
     pub fn load_from_file<P: AsRef<Path>>(_path: P) -> Result<Self> {
         // 1. Check GRAPHIFY_CONFIG_PATH
         let env_path = std::env::var("GRAPHIFY_CONFIG_PATH").ok();
@@ -115,6 +139,21 @@ impl LLMConfig {
                 .map_err(|e| anyhow!("Failed to read config from GRAPHIFY_CONFIG_PATH: {}", e))?;
             let mut config: LLMConfig = toml::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
+            
+            // Auto-populate api_keys if empty
+            if config.api_keys.is_empty() {
+                for p in &config.providers {
+                    if let Some(ref k) = p.api_key {
+                        for k_part in k.split(',') {
+                            let trimmed = k_part.trim();
+                            if !trimmed.is_empty() {
+                                config.api_keys.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             config.providers.sort_by_key(|p| p.priority);
             return Ok(config);
         }
@@ -131,6 +170,21 @@ impl LLMConfig {
                 .map_err(|e| anyhow!("Failed to read XDG config: {}", e))?;
             let mut config: LLMConfig = toml::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
+
+            // Auto-populate api_keys if empty
+            if config.api_keys.is_empty() {
+                for p in &config.providers {
+                    if let Some(ref k) = p.api_key {
+                        for k_part in k.split(',') {
+                            let trimmed = k_part.trim();
+                            if !trimmed.is_empty() {
+                                config.api_keys.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             config.providers.sort_by_key(|p| p.priority);
             return Ok(config);
         }
@@ -163,6 +217,7 @@ impl LLMConfig {
                     let r_type = match p_val["r#type"].as_str() {
                         Some("gemini") => ProviderType::Gemini,
                         Some("openrouter") => ProviderType::OpenRouter,
+                        Some("openai") => ProviderType::OpenAI,
                         _ => ProviderType::Ollama,
                     };
                     let endpoint = p_val["endpoint"].as_str().unwrap_or("").to_string();
@@ -217,6 +272,21 @@ impl LLMConfig {
             .map_err(|e| anyhow!("Failed to read XDG config: {}", e))?;
         let mut config: LLMConfig = toml::from_str(&content)
             .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
+
+        // Auto-populate api_keys if empty
+        if config.api_keys.is_empty() {
+            for p in &config.providers {
+                if let Some(ref k) = p.api_key {
+                    for k_part in k.split(',') {
+                        let trimmed = k_part.trim();
+                        if !trimmed.is_empty() {
+                            config.api_keys.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         config.providers.sort_by_key(|p| p.priority);
         Ok(config)
     }

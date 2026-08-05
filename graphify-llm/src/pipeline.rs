@@ -166,18 +166,28 @@ impl AutoRotatePipeline {
                     .map(|s| s.to_string())
                     .ok_or_else(|| anyhow!("Gemini response structural mismatch"))
             }
-            ProviderType::OpenRouter => {
+            ProviderType::OpenRouter | ProviderType::OpenAI => {
                 let key = api_key
-                    .ok_or_else(|| anyhow!("OpenRouter provider requires api_key"))?;
+                    .ok_or_else(|| anyhow!("Provider requires api_key"))?;
                 
-                let res = self.client.post(format!(
-                        "{}/api/v1/chat/completions",
-                        if provider.endpoint.is_empty() {
-                            "https://openrouter.ai"
-                        } else {
-                            provider.endpoint.trim_end_matches('/')
-                        }
-                    ))
+                let default_base = match provider.r#type {
+                    ProviderType::OpenRouter => "https://openrouter.ai/api",
+                    _ => "https://api.openai.com",
+                };
+                
+                let base_url = if provider.endpoint.is_empty() {
+                    default_base
+                } else {
+                    provider.endpoint.trim_end_matches('/')
+                };
+
+                let url = if provider.r#type == ProviderType::OpenRouter && provider.endpoint.is_empty() {
+                    format!("{}/v1/chat/completions", base_url)
+                } else {
+                    format!("{}/chat/completions", base_url)
+                };
+                
+                let res = self.client.post(&url)
                     .header("Authorization", format!("Bearer {}", key))
                     .header("HTTP-Referer", "https://github.com/cawa0505/graphify-rust")
                     .json(&serde_json::json!({
@@ -192,7 +202,7 @@ impl AutoRotatePipeline {
                 body["choices"][0]["message"]["content"]
                     .as_str()
                     .map(|s| s.to_string())
-                    .ok_or_else(|| anyhow!("OpenRouter structural response mismatch"))
+                    .ok_or_else(|| anyhow!("OpenAI/OpenRouter structural response mismatch"))
             }
         }
     }
@@ -207,6 +217,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
 
+    #[allow(clippy::too_many_lines)] // ponytail: mock server matches multiple HTTP routes in one loop, acceptable length for test helper
     async fn run_mock_server() -> Result<(String, tokio::task::JoinHandle<()>, Arc<AtomicU32>)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -227,6 +238,63 @@ mod tests {
                         if req_str.contains("key=badkey") {
                             // Respond with HTTP 429
                             let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n";
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        } else if req_str.contains("api/embeddings") {
+                            // Ollama embeddings mock
+                            let mut vector = vec![0.0; 1024];
+                            vector[0] = 0.5; // dummy values
+                            let json_body = serde_json::json!({
+                                "embedding": vector
+                            });
+                            let json_str = serde_json::to_string(&json_body).unwrap_or_default();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(),
+                                json_str
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        } else if req_str.contains("points/search") {
+                            // Qdrant search mock
+                            let json_body = serde_json::json!({
+                                "result": [{
+                                    "id": 1,
+                                    "payload": {
+                                        "node_id": "test_node_id"
+                                    }
+                                }]
+                            });
+                            let json_str = serde_json::to_string(&json_body).unwrap_or_default();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(),
+                                json_str
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        } else if req_str.contains("points") {
+                            // Qdrant upsert mock
+                            let json_body = serde_json::json!({
+                                "status": "ok"
+                            });
+                            let json_str = serde_json::to_string(&json_body).unwrap_or_default();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(),
+                                json_str
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        } else if req_str.contains("collections/graphify_memory") {
+                            // Qdrant collection check
+                            let json_body = serde_json::json!({
+                                "result": {
+                                    "status": "green"
+                                }
+                            });
+                            let json_str = serde_json::to_string(&json_body).unwrap_or_default();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(),
+                                json_str
+                            );
                             let _ = socket.write_all(response.as_bytes()).await;
                         } else if req_str.contains("api/generation") {
                             // Ollama mock
@@ -341,6 +409,111 @@ mod tests {
         assert_eq!(req_count.load(Ordering::SeqCst), 2);
 
         server_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_qdrant_memory_store() -> Result<()> {
+        let (mock_url, server_handle, _) = run_mock_server().await?;
+
+        let config = LLMConfig {
+            providers: vec![],
+            extraction: ExtractionConfig {
+                chunk_size: 1024,
+                max_concurrency: 1,
+                concurrency: None,
+            },
+            api_keys: vec![],
+            memory: crate::config::MemoryConfig {
+                short_term: crate::config::ShortTermMemoryConfig::default(),
+                long_term: crate::config::LongTermMemoryConfig {
+                    enabled: true,
+                    provider: "qdrant".to_string(),
+                    embedding: crate::config::EmbeddingConfig {
+                        provider: "ollama".to_string(),
+                        endpoint: mock_url.clone(),
+                        model: "bge-m3".to_string(),
+                        vector_size: 1024,
+                    },
+                    qdrant: crate::config::QdrantConfig {
+                        url: mock_url,
+                        api_key: None,
+                        collection: "graphify_memory".to_string(),
+                        distance: "Cosine".to_string(),
+                    },
+                },
+            },
+        };
+
+        let store = crate::memory::QdrantMemoryStore::new(config);
+        
+        // 1. Ensure collection check/create
+        store.ensure_collection().await?;
+
+        // 2. Upsert nodes
+        let nodes = vec![graphify_core::Node {
+            id: graphify_core::NodeId("test_node".to_string()),
+            label: "test_label".to_string(),
+            file_type: graphify_core::FileType::Code,
+            kind: "function".to_string(),
+            language: "rust".to_string(),
+            source_file: "lib.rs".to_string(),
+            start_line: 1,
+            end_line: 10,
+            doc_comment: Some("Doc text".to_string()),
+            description: Some("Desc text".to_string()),
+            metadata: None,
+        }];
+        store.upsert_nodes(&nodes).await?;
+
+        // 3. Query similar nodes
+        let results = store.query_similar_nodes("query", 5).await?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["payload"]["node_id"], "test_node_id");
+
+        server_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires physical homelab connectivity"]
+    async fn test_real_homelab_memory_store() -> Result<()> {
+        let config_path = std::path::PathBuf::from("/home/zeng/.config/graphify/config.toml");
+        if !config_path.exists() {
+            println!("Skipping real homelab test because config.toml doesn't exist");
+            return Ok(());
+        }
+        let config_str = std::fs::read_to_string(config_path)?;
+        let mut config: crate::config::LLMConfig = toml::from_str(&config_str)?;
+        
+        // Force-enable for integration test
+        config.memory.long_term.enabled = true;
+
+        let store = crate::memory::QdrantMemoryStore::new(config);
+        
+        println!("Checking real homelab connection and collection auto-creation...");
+        store.ensure_collection().await?;
+        
+        println!("Embedding dummy node via Ollama and upserting into Qdrant...");
+        let nodes = vec![graphify_core::Node {
+            id: graphify_core::NodeId("test_real_node".to_string()),
+            label: "test_real_label".to_string(),
+            file_type: graphify_core::FileType::Code,
+            kind: "function".to_string(),
+            language: "rust".to_string(),
+            source_file: "lib.rs".to_string(),
+            start_line: 1,
+            end_line: 10,
+            doc_comment: Some("Testing real homelab connection with Qdrant and Ollama".to_string()),
+            description: Some("Provides physical validation of local network setup".to_string()),
+            metadata: None,
+        }];
+        store.upsert_nodes(&nodes).await?;
+        
+        println!("Performing semantic query against Qdrant...");
+        let results = store.query_similar_nodes("physical validation", 5).await?;
+        println!("Real search results returned: {} items", results.len());
+        
         Ok(())
     }
 }

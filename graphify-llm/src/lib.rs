@@ -15,7 +15,9 @@
 pub mod config;
 pub mod gbnf;
 pub mod pipeline;
+pub mod memory;
 
 pub use config::{LLMConfig, Provider, ProviderType};
 pub use gbnf::get_json_schema_gbnf;
 pub use pipeline::AutoRotatePipeline;
+pub use memory::QdrantMemoryStore;
