@@ -28,10 +28,65 @@ pub struct ExtractionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortTermMemoryConfig {
+    pub max_messages: usize,
+}
+
+impl Default for ShortTermMemoryConfig {
+    fn default() -> Self {
+        Self { max_messages: 20 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QdrantConfig {
+    pub url: String,
+    pub api_key: Option<String>,
+    pub collection: String,
+    pub distance: String,
+}
+
+impl Default for QdrantConfig {
+    fn default() -> Self {
+        Self {
+            url: "http://localhost:6333".to_string(),
+            api_key: None,
+            collection: "graphify_memory".to_string(),
+            distance: "Cosine".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongTermMemoryConfig {
+    pub enabled: bool,
+    pub provider: String,
+    pub qdrant: QdrantConfig,
+}
+
+impl Default for LongTermMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: "qdrant".to_string(),
+            qdrant: QdrantConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryConfig {
+    pub short_term: ShortTermMemoryConfig,
+    pub long_term: LongTermMemoryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
     pub providers: Vec<Provider>,
     pub extraction: ExtractionConfig,
     pub api_keys: Vec<String>, // Flattened keys for rotation
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +151,7 @@ impl LLMConfig {
                     max_concurrency: 1,
                 },
                 api_keys: Vec::new(),
+                memory: MemoryConfig::default(),
             };
 
             if let Some(pro_list) = legacy.providers {

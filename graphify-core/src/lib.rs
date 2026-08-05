@@ -16,7 +16,9 @@
 pub mod types;
 pub mod extract;
 pub mod graph;
+pub mod toon;
 
 pub use types::{Node, Edge, GraphOutput, NodeId, FileType, ExtractionResult, GraphMetadata};
 pub use extract::extract_file;
 pub use graph::{build_graph, query_bfs, find_shortest_path};
+pub use toon::{to_toon, from_toon};

@@ -201,7 +201,7 @@ impl AutoRotatePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Provider, ProviderType, ExtractionConfig};
+    use crate::config::{Provider, ProviderType, ExtractionConfig, MemoryConfig};
     use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use std::sync::Arc;
@@ -283,6 +283,7 @@ mod tests {
                 max_concurrency: 1,
             },
             api_keys: vec!["badkey".to_string(), "goodkey".to_string()],
+            memory: MemoryConfig::default(),
         };
 
         let pipeline = AutoRotatePipeline::new(config);
@@ -326,6 +327,7 @@ mod tests {
                 max_concurrency: 1,
             },
             api_keys: vec![], // Empty global keys, fallback to provider api_key
+            memory: MemoryConfig::default(),
         };
 
         let pipeline = AutoRotatePipeline::new(config);

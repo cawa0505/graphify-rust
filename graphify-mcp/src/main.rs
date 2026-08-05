@@ -32,16 +32,28 @@ struct GraphState {
 
 impl GraphState {
     fn load() -> Result<Self> {
-        let graph_path = Path::new("graphify-out/graph.json");
-        let fallback_path = Path::new("graph.json");
+        let toon_path = Path::new("graphify-out/graph.toon");
+        let fallback_toon_path = Path::new("graph.toon");
+        let json_path = Path::new("graphify-out/graph.json");
+        let fallback_json_path = Path::new("graph.json");
 
-        let graph_data = if graph_path.exists() {
-            let file = File::open(graph_path)
+        let graph_data = if toon_path.exists() {
+            let content = fs::read_to_string(toon_path)
+                .map_err(|e| anyhow!("Failed to read graphify-out/graph.toon: {}", e))?;
+            graphify_core::from_toon(&content)
+                .map_err(|e| anyhow!("Failed to parse graphify-out/graph.toon: {}", e))?
+        } else if fallback_toon_path.exists() {
+            let content = fs::read_to_string(fallback_toon_path)
+                .map_err(|e| anyhow!("Failed to read graph.toon: {}", e))?;
+            graphify_core::from_toon(&content)
+                .map_err(|e| anyhow!("Failed to parse graph.toon: {}", e))?
+        } else if json_path.exists() {
+            let file = File::open(json_path)
                 .map_err(|e| anyhow!("Failed to open graphify-out/graph.json: {}", e))?;
             serde_json::from_reader(file)
                 .map_err(|e| anyhow!("Failed to parse graphify-out/graph.json: {}", e))?
-        } else if fallback_path.exists() {
-            let file = File::open(fallback_path)
+        } else if fallback_json_path.exists() {
+            let file = File::open(fallback_json_path)
                 .map_err(|e| anyhow!("Failed to open graph.json: {}", e))?;
             serde_json::from_reader(file)
                 .map_err(|e| anyhow!("Failed to parse graph.json: {}", e))?
@@ -78,16 +90,16 @@ impl GraphState {
     }
 
     fn save(&self) -> Result<()> {
-        let graph_path = Path::new("graphify-out/graph.json");
-        if let Some(parent) = graph_path.parent() {
+        let toon_path = Path::new("graphify-out/graph.toon");
+        if let Some(parent) = toon_path.parent() {
             fs::create_dir_all(parent)?;
             let gitignore_path = parent.join(".gitignore");
             if !gitignore_path.exists() {
                 fs::write(&gitignore_path, "*\n")?;
             }
         }
-        let file = File::create(graph_path)?;
-        serde_json::to_writer_pretty(file, &self.graph_data)?;
+        let toon_str = graphify_core::to_toon(&self.graph_data);
+        fs::write(toon_path, toon_str)?;
         Ok(())
     }
 }

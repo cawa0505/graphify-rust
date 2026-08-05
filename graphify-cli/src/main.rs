@@ -24,8 +24,8 @@ enum Commands {
     Extract {
         /// File or directory to extract
         path: PathBuf,
-        /// Output path for the generated graph JSON
-        #[arg(short, long, default_value = "graphify-out/graph.json")]
+        /// Output path for the generated graph
+        #[arg(short, long, default_value = "graphify-out/graph.toon")]
         output: PathBuf,
     },
     /// Query a node in the graph using BFS traversal
@@ -35,8 +35,8 @@ enum Commands {
         /// Maximum traversal depth
         #[arg(short, long, default_value_t = 1)]
         depth: usize,
-        /// Path to the graph JSON file
-        #[arg(short, long, default_value = "graphify-out/graph.json")]
+        /// Path to the graph file
+        #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
     },
     /// Find the shortest path between two nodes in the graph
@@ -45,8 +45,8 @@ enum Commands {
         source: String,
         /// Target Node ID or label
         target: String,
-        /// Path to the graph JSON file
-        #[arg(short, long, default_value = "graphify-out/graph.json")]
+        /// Path to the graph file
+        #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
     },
 }
@@ -105,8 +105,13 @@ fn run_extract(input_path: &Path, output_path: &Path) -> Result<()> {
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&graph_out)?;
-    std::fs::write(output_path, json_str)?;
+    if output_path.extension().and_then(|e| e.to_str()) == Some("toon") {
+        let toon_str = graphify_core::to_toon(&graph_out);
+        std::fs::write(output_path, toon_str)?;
+    } else {
+        let json_str = serde_json::to_string_pretty(&graph_out)?;
+        std::fs::write(output_path, json_str)?;
+    }
     println!(
         "Successfully extracted graph to {} (nodes: {}, edges: {})",
         output_path.display(),
@@ -162,8 +167,12 @@ fn collect_dir(
 fn load_graph_output(path: &Path) -> Result<GraphOutput> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read graph file: {}", path.display()))?;
-    let output: GraphOutput = serde_json::from_str(&content)?;
-    Ok(output)
+    if path.extension().and_then(|e| e.to_str()) == Some("toon") {
+        graphify_core::from_toon(&content)
+    } else {
+        let output: GraphOutput = serde_json::from_str(&content)?;
+        Ok(output)
+    }
 }
 
 fn find_node(nodes: &[Node], input: &str) -> Option<NodeId> {
