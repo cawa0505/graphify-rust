@@ -8,6 +8,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 
 /// 頂層版面：Tab 列 / 主視圖 (70%) / 事件日誌 (30%) / 快捷鍵列
+/// `show_event_log = false` 時主視圖佔滿 100% 高度
 #[derive(Debug, Clone, Copy)]
 pub struct Chrome {
     pub tabs: Rect,
@@ -17,15 +18,25 @@ pub struct Chrome {
 }
 
 #[must_use]
-pub fn split(area: Rect) -> Chrome {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+pub fn split(area: Rect, show_event_log: bool) -> Chrome {
+    let constraints: [Constraint; 4] = if show_event_log {
+        [
             Constraint::Length(3),
             Constraint::Percentage(70),
             Constraint::Percentage(30),
             Constraint::Length(3),
-        ])
+        ]
+    } else {
+        [
+            Constraint::Length(3),
+            Constraint::Percentage(100),
+            Constraint::Length(0),
+            Constraint::Length(3),
+        ]
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(area);
     Chrome {
         tabs: rows[0],
@@ -76,6 +87,7 @@ pub enum ActionTag {
     Select,
     Inspect,
     Reset,
+    Log,
 }
 
 /// 動作觸發後短暫閃爍高亮的狀態
@@ -129,6 +141,7 @@ pub fn render_footer(f: &mut ratatui::Frame, tab: ActiveTab, flash: &Flash, area
             pill("/", "Filter", theme::GOLD, ActionTag::Filter),
             pill("t", "Trace", theme::GOLD, ActionTag::Trace),
             pill("g/Enter", "Code", theme::GREEN, ActionTag::Edit),
+            pill("e", "Event Log", theme::MAUVE, ActionTag::Log),
             pill("q", "Quit", theme::RED, ActionTag::Quit),
         ][..],
         ActiveTab::VisualGraph => &[
@@ -137,6 +150,7 @@ pub fn render_footer(f: &mut ratatui::Frame, tab: ActiveTab, flash: &Flash, area
             pill("Click", "Select", theme::GREEN, ActionTag::Select),
             pill("R-Click", "Inspect", theme::GOLD, ActionTag::Inspect),
             pill("r", "Reset", theme::CYAN, ActionTag::Reset),
+            pill("e", "Event Log", theme::MAUVE, ActionTag::Log),
             pill("q", "Quit", theme::RED, ActionTag::Quit),
         ][..],
     };

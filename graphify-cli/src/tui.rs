@@ -38,6 +38,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Tab 標題：繪製與點擊命中測試共用同一來源，避免偏移漂移
+const TAB_TITLES: [&str; 2] = [" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
+
 pub struct App {
     pub graph: GraphOutput,
     pub filtered_nodes: Vec<usize>,
@@ -64,6 +67,7 @@ pub struct App {
     pub drag_start: Option<(u16, u16)>,
 
     // EVENT LOG & FOOTER FLASH
+    pub show_event_log: bool,
     pub event_log: Vec<LogEntry>,
     pub log_state: ListState,
     pub flash: Flash,
@@ -101,6 +105,7 @@ impl App {
             last_tabs_area: None,
             last_list_area: None,
             drag_start: None,
+            show_event_log: true,
             event_log: Vec::new(),
             log_state: ListState::default(),
             flash: Flash::default(),
@@ -589,6 +594,16 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                 app.log("Keyboard: 'r' reset view", theme::CYAN);
             }
         }
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            app.show_event_log = !app.show_event_log;
+            app.flash.trigger(ActionTag::Log);
+            let state = if app.show_event_log {
+                "shown"
+            } else {
+                "hidden"
+            };
+            app.log(format!("Keyboard: 'e' → Event Log {state}"), theme::MAUVE);
+        }
         KeyCode::Char('/') => {
             if app.active_tab == ActiveTab::Explorer {
                 app.input_mode = true;
@@ -670,21 +685,30 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.drag_start = Some((click_col, click_row));
             }
 
-            // 2. 偵測點擊 Tab 切換 (動態區域)
+            // 2. 偵測點擊 Tab 切換：以實際標題文字寬度逐字元命中測試
+            //    (Tabs widget 左對齊、標題連續排列，不可用半寬切分)
             if let Some(tabs_area) = app.last_tabs_area {
                 if click_row == tabs_area.y + 1 {
-                    let half_width = tabs_area.width / 2;
-                    if click_col >= tabs_area.x && click_col < tabs_area.x + tabs_area.width {
-                        let tab_name = if click_col < tabs_area.x + half_width {
-                            "Explorer"
-                        } else {
-                            "VisualGraph"
+                    let mut col = usize::from(tabs_area.x) + 1; // 內側起點：邊框佔 1 列
+                    let mut clicked: Option<ActiveTab> = None;
+                    for (i, title) in TAB_TITLES.iter().enumerate() {
+                        let w = ratatui::text::Line::from(*title).width();
+                        if (col..col + w).contains(&usize::from(click_col)) {
+                            clicked = Some(if i == 0 {
+                                ActiveTab::Explorer
+                            } else {
+                                ActiveTab::VisualGraph
+                            });
+                            break;
+                        }
+                        col += w;
+                    }
+                    if let Some(tab) = clicked {
+                        let tab_name = match tab {
+                            ActiveTab::Explorer => "Explorer",
+                            ActiveTab::VisualGraph => "VisualGraph",
                         };
-                        app.active_tab = if click_col < tabs_area.x + half_width {
-                            ActiveTab::Explorer
-                        } else {
-                            ActiveTab::VisualGraph
-                        };
+                        app.active_tab = tab;
                         app.log(
                             format!("Mouse Click: x={click_col}, y={click_row} [Tab: {tab_name}]"),
                             theme::CYAN,
@@ -817,15 +841,14 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 
 #[allow(clippy::too_many_lines)]
 fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
-    let chrome = layout::split(f.area());
+    let chrome = layout::split(f.area(), app.show_event_log);
 
     // 1. Tab 列導航
-    let tab_titles = vec![" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
     let active_idx = match app.active_tab {
         ActiveTab::Explorer => 0,
         ActiveTab::VisualGraph => 1,
     };
-    let tabs = Tabs::new(tab_titles)
+    let tabs = Tabs::new(TAB_TITLES)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -853,8 +876,10 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
         ActiveTab::VisualGraph => draw_visual_graph(f, app, chrome.main),
     }
 
-    // 3. 事件日誌面板 (30%)
-    layout::render_event_log(f, &app.event_log, &mut app.log_state, chrome.log);
+    // 3. 事件日誌面板 (30%) — 'e' 隱藏時主視圖佔滿 100%
+    if app.show_event_log {
+        layout::render_event_log(f, &app.event_log, &mut app.log_state, chrome.log);
+    }
 
     // 4. 快捷鍵 Footer (藥丸按鈕)
     layout::render_footer(f, app.active_tab, &app.flash, chrome.footer);
