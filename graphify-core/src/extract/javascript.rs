@@ -38,6 +38,8 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     Ok(ExtractionResult { nodes, edges })
 }
 
+// ponytail: allow unnecessary_wraps as keeping Result<()> signature preserves consistent structure across all language extractors
+#[allow(clippy::unnecessary_wraps)]
 fn traverse_tree(
     node: TSNode,
     source_bytes: &[u8],
@@ -46,140 +48,151 @@ fn traverse_tree(
     nodes: &mut Vec<Node>,
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
-    let kind = node.kind();
-    match kind {
-        "class_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownClass");
-                let node_id = NodeId(format!("{file_path}:class:{name}"));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "class".to_string(),
-                    language: "javascript".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("class {name}")),
-                    metadata: None,
-                });
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: node_id,
-                    relation: "contains".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: None,
-                });
-            }
-        }
-        "function_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
-                let node_id = NodeId(format!("{file_path}:function:{name}"));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "function".to_string(),
-                    language: "javascript".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("function {name}")),
-                    metadata: None,
-                });
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: node_id.clone(),
-                    relation: "contains".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: None,
-                });
+    let mut stack = vec![(node, parent_module_id.clone())];
 
-                // Find any nested function calls inside this function
-                find_calls(node, source_bytes, file_path, &node_id, edges);
+    while let Some((current, current_parent_id)) = stack.pop() {
+        let kind = current.kind();
+        let mut next_parent_id = current_parent_id.clone();
+
+        match kind {
+            "class_declaration" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownClass");
+                    let node_id = NodeId(format!("{file_path}:class:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "class".to_string(),
+                        language: "javascript".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("class {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: current_parent_id.clone(),
+                        target: node_id.clone(),
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+                    next_parent_id = node_id;
+                }
             }
-        }
-        "variable_declaration" => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    let name = child.utf8_text(source_bytes).unwrap_or("");
-                    if !name.is_empty() {
-                        let node_id = NodeId(format!("{}:variable:{}", file_path, name));
-                        let start_line = node.start_position().row + 1;
-                        nodes.push(Node {
-                            id: node_id.clone(),
-                            label: name.to_string(),
-                            file_type: FileType::Code,
-                            kind: "variable".to_string(),
-                            language: "javascript".to_string(),
-                            source_file: file_path.to_string(),
-                            start_line,
-                            end_line: node.end_position().row + 1,
-                            doc_comment: None,
-                            description: Some(format!("variable {}", name)),
-                            metadata: None,
-                        });
-                        edges.push(Edge {
-                            source: parent_module_id.clone(),
-                            target: node_id,
-                            relation: "contains".to_string(),
-                            source_file: file_path.to_string(),
-                            confidence: "EXTRACTED".to_string(),
-                            source_location: format!("{file_path}:{start_line}"),
-                            description: None,
-                        });
+            "function_declaration" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                    let node_id = NodeId(format!("{file_path}:function:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "function".to_string(),
+                        language: "javascript".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("function {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: current_parent_id.clone(),
+                        target: node_id.clone(),
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+
+                    // Find any nested function calls inside this function
+                    find_calls(current, source_bytes, file_path, &node_id, edges);
+                }
+            }
+            "variable_declaration" => {
+                let count = current.child_count();
+                for i in 0..count {
+                    if let Some(child) = current.child(i) {
+                        if child.kind() == "identifier" {
+                            let name = child.utf8_text(source_bytes).unwrap_or("");
+                            if !name.is_empty() {
+                                let node_id = NodeId(format!("{}:variable:{}", file_path, name));
+                                let start_line = current.start_position().row + 1;
+                                nodes.push(Node {
+                                    id: node_id.clone(),
+                                    label: name.to_string(),
+                                    file_type: FileType::Code,
+                                    kind: "variable".to_string(),
+                                    language: "javascript".to_string(),
+                                    source_file: file_path.to_string(),
+                                    start_line,
+                                    end_line: current.end_position().row + 1,
+                                    doc_comment: None,
+                                    description: Some(format!("variable {}", name)),
+                                    metadata: None,
+                                });
+                                edges.push(Edge {
+                                    source: current_parent_id.clone(),
+                                    target: node_id,
+                                    relation: "contains".to_string(),
+                                    source_file: file_path.to_string(),
+                                    confidence: "EXTRACTED".to_string(),
+                                    source_location: format!("{file_path}:{start_line}"),
+                                    description: None,
+                                });
+                            }
+                        }
                     }
                 }
             }
+            "import_statement" => {
+                let path_str = current.utf8_text(source_bytes).unwrap_or("");
+                let cleaned = path_str.trim_start_matches("import ").trim_end_matches(';').to_string();
+                let target_id = NodeId(format!("import:{cleaned}"));
+                let start_line = current.start_position().row + 1;
+                edges.push(Edge {
+                    source: current_parent_id.clone(),
+                    target: target_id,
+                    relation: "imports".to_string(),
+                    source_file: file_path.to_string(),
+                    confidence: "EXTRACTED".to_string(),
+                    source_location: format!("{file_path}:{start_line}"),
+                    description: Some(cleaned),
+                });
+            }
+            "export_statement" => {
+                let path_str = current.utf8_text(source_bytes).unwrap_or("");
+                let cleaned = path_str.trim_start_matches("export ").trim_end_matches(';').to_string();
+                let target_id = NodeId(format!("export:{cleaned}"));
+                let start_line = current.start_position().row + 1;
+                edges.push(Edge {
+                    source: current_parent_id.clone(),
+                    target: target_id,
+                    relation: "exports".to_string(),
+                    source_file: file_path.to_string(),
+                    confidence: "EXTRACTED".to_string(),
+                    source_location: format!("{file_path}:{start_line}"),
+                    description: Some(cleaned),
+                });
+            }
+            _ => {}
         }
-        "import_statement" => {
-            let path_str = node.utf8_text(source_bytes).unwrap_or("");
-            let cleaned = path_str.trim_start_matches("import ").trim_end_matches(';').to_string();
-            let target_id = NodeId(format!("import:{cleaned}"));
-            let start_line = node.start_position().row + 1;
-            edges.push(Edge {
-                source: parent_module_id.clone(),
-                target: target_id,
-                relation: "imports".to_string(),
-                source_file: file_path.to_string(),
-                confidence: "EXTRACTED".to_string(),
-                source_location: format!("{file_path}:{start_line}"),
-                description: Some(cleaned),
-            });
-        }
-        "export_statement" => {
-            let path_str = node.utf8_text(source_bytes).unwrap_or("");
-            let cleaned = path_str.trim_start_matches("export ").trim_end_matches(';').to_string();
-            let target_id = NodeId(format!("export:{cleaned}"));
-            let start_line = node.start_position().row + 1;
-            edges.push(Edge {
-                source: parent_module_id.clone(),
-                target: target_id,
-                relation: "exports".to_string(),
-                source_file: file_path.to_string(),
-                confidence: "EXTRACTED".to_string(),
-                source_location: format!("{file_path}:{start_line}"),
-                description: Some(cleaned),
-            });
-        }
-        _ => {}
-    }
 
-    // Traverse children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        traverse_tree(child, source_bytes, file_path, parent_module_id, nodes, edges)?;
+        // Traverse children
+        let count = current.child_count();
+        for i in (0..count).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push((child, next_parent_id.clone()));
+            }
+        }
     }
 
     Ok(())

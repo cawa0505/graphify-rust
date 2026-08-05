@@ -38,6 +38,8 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     Ok(ExtractionResult { nodes, edges })
 }
 
+// ponytail: allow unnecessary_wraps as keeping Result<()> signature preserves consistent structure across all language extractors
+#[allow(clippy::unnecessary_wraps)]
 fn traverse_tree(
     node: TSNode,
     source_bytes: &[u8],
@@ -46,120 +48,125 @@ fn traverse_tree(
     nodes: &mut Vec<Node>,
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
-    let kind = node.kind();
-    match kind {
-        "package_clause" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("main");
-                let node_id = NodeId(format!("{}:package:{}", file_path, name));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "module".to_string(),
-                    language: "go".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("package {}", name)),
-                    metadata: None,
-                });
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: node_id,
-                    relation: "contains".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: None,
-                });
-            }
-        }
-        "function_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
-                let node_id = NodeId(format!("{file_path}:function:{name}"));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "function".to_string(),
-                    language: "go".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("func {name}")),
-                    metadata: None,
-                });
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: node_id.clone(),
-                    relation: "contains".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: None,
-                });
+    let mut stack = vec![node];
 
-                // Find any nested function calls inside this function
-                find_calls(node, source_bytes, file_path, &node_id, edges);
+    while let Some(current) = stack.pop() {
+        let kind = current.kind();
+        match kind {
+            "package_clause" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("main");
+                    let node_id = NodeId(format!("{}:package:{}", file_path, name));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "module".to_string(),
+                        language: "go".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("package {}", name)),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: parent_module_id.clone(),
+                        target: node_id,
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+                }
             }
-        }
-        "import_declaration" => {
-            let path_str = node.utf8_text(source_bytes).unwrap_or("");
-            let cleaned = path_str.trim_start_matches("import ").trim_end_matches(';').to_string();
-            let target_id = NodeId(format!("import:{cleaned}"));
-            let start_line = node.start_position().row + 1;
-            edges.push(Edge {
-                source: parent_module_id.clone(),
-                target: target_id,
-                relation: "imports".to_string(),
-                source_file: file_path.to_string(),
-                confidence: "EXTRACTED".to_string(),
-                source_location: format!("{file_path}:{start_line}"),
-                description: Some(cleaned),
-            });
-        }
-        "type_spec" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownType");
-                let node_id = NodeId(format!("{file_path}:type:{name}"));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "struct".to_string(),
-                    language: "go".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("type {name}")),
-                    metadata: None,
-                });
+            "function_declaration" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                    let node_id = NodeId(format!("{file_path}:function:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "function".to_string(),
+                        language: "go".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("func {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: parent_module_id.clone(),
+                        target: node_id.clone(),
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+
+                    // Find any nested function calls inside this function
+                    find_calls(current, source_bytes, file_path, &node_id, edges);
+                }
+            }
+            "import_declaration" => {
+                let path_str = current.utf8_text(source_bytes).unwrap_or("");
+                let cleaned = path_str.trim_start_matches("import ").trim_end_matches(';').to_string();
+                let target_id = NodeId(format!("import:{cleaned}"));
+                let start_line = current.start_position().row + 1;
                 edges.push(Edge {
                     source: parent_module_id.clone(),
-                    target: node_id,
-                    relation: "contains".to_string(),
+                    target: target_id,
+                    relation: "imports".to_string(),
                     source_file: file_path.to_string(),
                     confidence: "EXTRACTED".to_string(),
                     source_location: format!("{file_path}:{start_line}"),
-                    description: None,
+                    description: Some(cleaned),
                 });
             }
+            "type_spec" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownType");
+                    let node_id = NodeId(format!("{file_path}:type:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "struct".to_string(),
+                        language: "go".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("type {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: parent_module_id.clone(),
+                        target: node_id,
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+                }
+            }
+            _ => {}
         }
-        _ => {}
-    }
 
-    // Traverse children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        traverse_tree(child, source_bytes, file_path, parent_module_id, nodes, edges)?;
+        let count = current.child_count();
+        for i in (0..count).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push(child);
+            }
+        }
     }
 
     Ok(())

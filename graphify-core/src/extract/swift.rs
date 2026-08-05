@@ -43,6 +43,8 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     Ok(ExtractionResult { nodes, edges })
 }
 
+// ponytail: allow unnecessary_wraps as keeping Result<()> signature preserves consistent structure across all language extractors
+#[allow(clippy::unnecessary_wraps)]
 fn traverse_tree(
     node: TSNode,
     source_bytes: &[u8],
@@ -51,29 +53,73 @@ fn traverse_tree(
     nodes: &mut Vec<Node>,
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
-    let kind = node.kind();
-    match kind {
-        "class_declaration" | "protocol_declaration" | "struct_declaration" | "enum_declaration" | "extension_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownType");
-                let node_id = NodeId(format!("{file_path}:class:{name}"));
-                let start_line = node.start_position().row + 1;
-                
+    let mut stack = vec![(node, parent_id.clone())];
+
+    while let Some((current, current_parent_id)) = stack.pop() {
+        let kind = current.kind();
+        let mut next_parent_id = current_parent_id.clone();
+
+        match kind {
+            "class_declaration" | "protocol_declaration" | "struct_declaration" | "enum_declaration" | "extension_declaration" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownType");
+                    let node_id = NodeId(format!("{file_path}:class:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "class".to_string(),
+                        language: "swift".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("{kind} {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: current_parent_id.clone(),
+                        target: node_id.clone(),
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+                    next_parent_id = node_id;
+                }
+            }
+            "function_declaration" | "init_declaration" | "deinit_declaration" => {
+                let name = if kind == "function_declaration" {
+                    current.child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(source_bytes).ok())
+                        .unwrap_or("UnknownFunction")
+                } else if kind == "init_declaration" {
+                    "init"
+                } else {
+                    "deinit"
+                };
+
+                let node_id = NodeId(format!("{file_path}:function:{name}"));
+                let start_line = current.start_position().row + 1;
+
                 nodes.push(Node {
                     id: node_id.clone(),
                     label: name.to_string(),
                     file_type: FileType::Code,
-                    kind: "class".to_string(),
+                    kind: "function".to_string(),
                     language: "swift".to_string(),
                     source_file: file_path.to_string(),
                     start_line,
-                    end_line: node.end_position().row + 1,
+                    end_line: current.end_position().row + 1,
                     doc_comment: None,
                     description: Some(format!("{kind} {name}")),
                     metadata: None,
                 });
                 edges.push(Edge {
-                    source: parent_id.clone(),
+                    source: current_parent_id.clone(),
                     target: node_id.clone(),
                     relation: "contains".to_string(),
                     source_file: file_path.to_string(),
@@ -82,62 +128,16 @@ fn traverse_tree(
                     description: None,
                 });
 
-                // Traverse body elements nested inside this type
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    let k = child.kind();
-                    if k == "member_declaration_list" || k.ends_with("_body") {
-                        let mut body_cursor = child.walk();
-                        for body_child in child.children(&mut body_cursor) {
-                            traverse_tree(body_child, source_bytes, file_path, &node_id, nodes, edges)?;
-                        }
-                    }
-                }
+                find_calls(current, source_bytes, file_path, &node_id, edges);
             }
+            _ => {}
         }
-        "function_declaration" | "init_declaration" | "deinit_declaration" => {
-            let name = if kind == "function_declaration" {
-                node.child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(source_bytes).ok())
-                    .unwrap_or("UnknownFunction")
-            } else if kind == "init_declaration" {
-                "init"
-            } else {
-                "deinit"
-            };
 
-            let node_id = NodeId(format!("{file_path}:function:{name}"));
-            let start_line = node.start_position().row + 1;
-
-            nodes.push(Node {
-                id: node_id.clone(),
-                label: name.to_string(),
-                file_type: FileType::Code,
-                kind: "function".to_string(),
-                language: "swift".to_string(),
-                source_file: file_path.to_string(),
-                start_line,
-                end_line: node.end_position().row + 1,
-                doc_comment: None,
-                description: Some(format!("{kind} {name}")),
-                metadata: None,
-            });
-            edges.push(Edge {
-                source: parent_id.clone(),
-                target: node_id.clone(),
-                relation: "contains".to_string(),
-                source_file: file_path.to_string(),
-                confidence: "EXTRACTED".to_string(),
-                source_location: format!("{file_path}:{start_line}"),
-                description: None,
-            });
-
-            find_calls(node, source_bytes, file_path, &node_id, edges);
-        }
-        _ => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                traverse_tree(child, source_bytes, file_path, parent_id, nodes, edges)?;
+        // Push children
+        let count = current.child_count();
+        for i in (0..count).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push((child, next_parent_id.clone()));
             }
         }
     }
@@ -146,11 +146,13 @@ fn traverse_tree(
 
 fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &NodeId, edges: &mut Vec<Edge>) {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "call_expression" {
+    let mut stack = vec![node];
+
+    while let Some(current) = stack.pop() {
+        if current.kind() == "call_expression" {
             // Check direct simple identifiers or navigation expression calls
             let mut callee = "Unknown";
-            if let Some(n) = child.child(0) {
+            if let Some(n) = current.child(0) {
                 if n.kind() == "navigation_expression" {
                     if let Some(sub) = n.child_by_field_name("suffix") {
                         callee = sub.utf8_text(source_bytes).unwrap_or("Unknown");
@@ -161,7 +163,7 @@ fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &No
             }
             if callee != "Unknown" {
                 let target_id = NodeId(format!("{file_path}:function:{callee}"));
-                let start_line = child.start_position().row + 1;
+                let start_line = current.start_position().row + 1;
                 edges.push(Edge {
                     source: caller_id.clone(),
                     target: target_id,
@@ -173,6 +175,8 @@ fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &No
                 });
             }
         }
-        find_calls(child, source_bytes, file_path, caller_id, edges);
+        for child in current.children(&mut cursor) {
+            stack.push(child);
+        }
     }
 }

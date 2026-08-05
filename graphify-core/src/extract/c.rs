@@ -43,6 +43,8 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     Ok(ExtractionResult { nodes, edges })
 }
 
+// ponytail: allow unnecessary_wraps as keeping Result<()> signature preserves consistent structure across all language extractors
+#[allow(clippy::unnecessary_wraps)]
 fn traverse_tree(
     node: TSNode,
     source_bytes: &[u8],
@@ -51,104 +53,114 @@ fn traverse_tree(
     nodes: &mut Vec<Node>,
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
-    let kind = node.kind();
-    match kind {
-        "struct_specifier" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownStruct");
-                let node_id = NodeId(format!("{file_path}:struct:{name}"));
-                let start_line = node.start_position().row + 1;
-                nodes.push(Node {
-                    id: node_id.clone(),
-                    label: name.to_string(),
-                    file_type: FileType::Code,
-                    kind: "struct".to_string(),
-                    language: "c".to_string(),
-                    source_file: file_path.to_string(),
-                    start_line,
-                    end_line: node.end_position().row + 1,
-                    doc_comment: None,
-                    description: Some(format!("struct {name}")),
-                    metadata: None,
-                });
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: node_id,
-                    relation: "contains".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: None,
-                });
-            }
-        }
-        "function_definition" => {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                let mut current = declarator;
-                while current.kind() == "pointer_declarator" || current.kind() == "parenthesized_declarator" {
-                    if let Some(child) = current.child(0) {
-                        current = child;
-                    } else {
-                        break;
-                    }
-                }
-                if current.kind() == "function_declarator" {
-                    if let Some(name_node) = current.child_by_field_name("declarator") {
-                        let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
-                        let node_id = NodeId(format!("{file_path}:function:{name}"));
-                        let start_line = node.start_position().row + 1;
-                        nodes.push(Node {
-                            id: node_id.clone(),
-                            label: name.to_string(),
-                            file_type: FileType::Code,
-                            kind: "function".to_string(),
-                            language: "c".to_string(),
-                            source_file: file_path.to_string(),
-                            start_line,
-                            end_line: node.end_position().row + 1,
-                            doc_comment: None,
-                            description: Some(format!("function {name}")),
-                            metadata: None,
-                        });
-                        edges.push(Edge {
-                            source: parent_module_id.clone(),
-                            target: node_id.clone(),
-                            relation: "contains".to_string(),
-                            source_file: file_path.to_string(),
-                            confidence: "EXTRACTED".to_string(),
-                            source_location: format!("{file_path}:{start_line}"),
-                            description: None,
-                        });
+    let mut stack = vec![(node, parent_module_id.clone())];
 
-                        find_calls(node, source_bytes, file_path, &node_id, edges);
-                    }
+    while let Some((current, current_parent_id)) = stack.pop() {
+        let kind = current.kind();
+        let mut next_parent_id = current_parent_id.clone();
+
+        match kind {
+            "struct_specifier" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownStruct");
+                    let node_id = NodeId(format!("{file_path}:struct:{name}"));
+                    let start_line = current.start_position().row + 1;
+                    nodes.push(Node {
+                        id: node_id.clone(),
+                        label: name.to_string(),
+                        file_type: FileType::Code,
+                        kind: "struct".to_string(),
+                        language: "c".to_string(),
+                        source_file: file_path.to_string(),
+                        start_line,
+                        end_line: current.end_position().row + 1,
+                        doc_comment: None,
+                        description: Some(format!("struct {name}")),
+                        metadata: None,
+                    });
+                    edges.push(Edge {
+                        source: current_parent_id.clone(),
+                        target: node_id.clone(),
+                        relation: "contains".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: None,
+                    });
+                    next_parent_id = node_id;
                 }
             }
+            "function_definition" => {
+                if let Some(declarator) = current.child_by_field_name("declarator") {
+                    let mut curr_decl = declarator;
+                    while curr_decl.kind() == "pointer_declarator" || curr_decl.kind() == "parenthesized_declarator" {
+                        if let Some(child) = curr_decl.child(0) {
+                            curr_decl = child;
+                        } else {
+                            break;
+                        }
+                    }
+                    if curr_decl.kind() == "function_declarator" {
+                        if let Some(name_node) = curr_decl.child_by_field_name("declarator") {
+                            let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                            let node_id = NodeId(format!("{file_path}:function:{name}"));
+                            let start_line = current.start_position().row + 1;
+                            nodes.push(Node {
+                                id: node_id.clone(),
+                                label: name.to_string(),
+                                file_type: FileType::Code,
+                                kind: "function".to_string(),
+                                language: "c".to_string(),
+                                source_file: file_path.to_string(),
+                                start_line,
+                                end_line: current.end_position().row + 1,
+                                doc_comment: None,
+                                description: Some(format!("function {name}")),
+                                metadata: None,
+                            });
+                            edges.push(Edge {
+                                source: current_parent_id.clone(),
+                                target: node_id.clone(),
+                                relation: "contains".to_string(),
+                                source_file: file_path.to_string(),
+                                confidence: "EXTRACTED".to_string(),
+                                source_location: format!("{file_path}:{start_line}"),
+                                description: None,
+                            });
+                            next_parent_id = node_id.clone();
+
+                            find_calls(current, source_bytes, file_path, &next_parent_id, edges);
+                        }
+                    }
+                }
+            }
+            "preproc_include" => {
+                if let Some(path_node) = current.child_by_field_name("path") {
+                    let path_str = path_node.utf8_text(source_bytes).unwrap_or("");
+                    let cleaned = path_str.trim_matches(|c| c == '<' || c == '>' || c == '"').to_string();
+                    let target_id = NodeId(format!("import:{cleaned}"));
+                    let start_line = current.start_position().row + 1;
+                    edges.push(Edge {
+                        source: current_parent_id.clone(),
+                        target: target_id,
+                        relation: "imports".to_string(),
+                        source_file: file_path.to_string(),
+                        confidence: "EXTRACTED".to_string(),
+                        source_location: format!("{file_path}:{start_line}"),
+                        description: Some(format!("include {cleaned}")),
+                    });
+                }
+            }
+            _ => {}
         }
-        "preproc_include" => {
-            if let Some(path_node) = node.child_by_field_name("path") {
-                let path_str = path_node.utf8_text(source_bytes).unwrap_or("");
-                let cleaned = path_str.trim_matches(|c| c == '<' || c == '>' || c == '"').to_string();
-                let target_id = NodeId(format!("import:{cleaned}"));
-                let start_line = node.start_position().row + 1;
-                edges.push(Edge {
-                    source: parent_module_id.clone(),
-                    target: target_id,
-                    relation: "imports".to_string(),
-                    source_file: file_path.to_string(),
-                    confidence: "EXTRACTED".to_string(),
-                    source_location: format!("{file_path}:{start_line}"),
-                    description: Some(format!("include {cleaned}")),
-                });
+
+        // Push children to stack
+        let count = current.child_count();
+        for i in (0..count).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push((child, next_parent_id.clone()));
             }
         }
-        _ => {}
-    }
-
-    // Traverse children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        traverse_tree(child, source_bytes, file_path, parent_module_id, nodes, edges)?;
     }
 
     Ok(())
