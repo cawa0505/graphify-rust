@@ -7,7 +7,7 @@
 
 mod types;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use graphify_core::extract::extract_file;
 use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
@@ -58,23 +58,33 @@ impl GraphState {
             serde_json::from_reader(file)
                 .map_err(|e| anyhow!("Failed to parse graph.json: {}", e))?
         } else {
-            GraphOutput {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                metadata: GraphMetadata {
-                    version: "1.0".to_string(),
-                    generated_at: "0".to_string(),
-                    total_nodes: 0,
-                    total_edges: 0,
-                    languages: Vec::new(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                },
-            }
+            return Self::empty();
         };
 
         let (graph, node_map) = build_graph(&graph_data.nodes, &graph_data.edges)?;
 
+        Ok(Self {
+            graph_data,
+            graph,
+            node_map,
+        })
+    }
+
+    fn empty() -> Result<Self> {
+        let graph_data = GraphOutput {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            metadata: GraphMetadata {
+                version: "1.0".to_string(),
+                generated_at: "0".to_string(),
+                total_nodes: 0,
+                total_edges: 0,
+                languages: Vec::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let (graph, node_map) = build_graph(&graph_data.nodes, &graph_data.edges)?;
         Ok(Self {
             graph_data,
             graph,
@@ -107,7 +117,16 @@ impl GraphState {
 fn main() -> Result<()> {
     eprintln!("graphify-mcp: MCP server starting on stdio");
 
-    let state = Arc::new(RwLock::new(GraphState::load()?));
+    // A stale or corrupt graph file must not kill the server at startup;
+    // degrade to an empty graph so tools keep responding with honest
+    // "node not found" results instead of dropping the MCP connection.
+    let state = Arc::new(RwLock::new(match GraphState::load() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("graphify-mcp: failed to load graph, starting empty: {e}");
+            GraphState::empty()?
+        }
+    }));
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -295,12 +314,19 @@ fn handle_tool_call(
         "graphify_path" => {
             let params: PathParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
-            let src_resolved = find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.source.clone()))
-                .ok_or_else(|| anyhow!("Source node not found: {}", params.source))?;
-            let tgt_resolved = find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.target.clone()))
-                .ok_or_else(|| anyhow!("Target node not found: {}", params.target))?;
+            let src_resolved =
+                find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.source.clone()))
+                    .ok_or_else(|| anyhow!("Source node not found: {}", params.source))?;
+            let tgt_resolved =
+                find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.target.clone()))
+                    .ok_or_else(|| anyhow!("Target node not found: {}", params.target))?;
 
-            let path_opt = find_shortest_path(&r_state.graph, &r_state.node_map, &src_resolved, &tgt_resolved)?;
+            let path_opt = find_shortest_path(
+                &r_state.graph,
+                &r_state.node_map,
+                &src_resolved,
+                &tgt_resolved,
+            )?;
             Ok(serde_json::to_value(path_opt)?)
         }
         "graph_summary" => {
@@ -308,7 +334,12 @@ fn handle_tool_call(
             // Return top-level module topology, core structs and classes
             let mut summary_nodes = Vec::new();
             for node in &r_state.graph_data.nodes {
-                if node.kind == "module" || node.kind == "class" || node.kind == "struct" || node.kind == "trait" || node.kind == "interface" {
+                if node.kind == "module"
+                    || node.kind == "class"
+                    || node.kind == "struct"
+                    || node.kind == "trait"
+                    || node.kind == "interface"
+                {
                     summary_nodes.push(node.clone());
                 }
             }
@@ -316,9 +347,12 @@ fn handle_tool_call(
             summary_nodes.truncate(15);
 
             let mut summary_edges = Vec::new();
-            let summary_node_ids: std::collections::HashSet<&NodeId> = summary_nodes.iter().map(|n| &n.id).collect();
+            let summary_node_ids: std::collections::HashSet<&NodeId> =
+                summary_nodes.iter().map(|n| &n.id).collect();
             for edge in &r_state.graph_data.edges {
-                if summary_node_ids.contains(&edge.source) && summary_node_ids.contains(&edge.target) {
+                if summary_node_ids.contains(&edge.source)
+                    && summary_node_ids.contains(&edge.target)
+                {
                     summary_edges.push(edge.clone());
                 }
             }
@@ -346,12 +380,19 @@ fn handle_tool_call(
         "graph_trace_path" => {
             let params: TracePathParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
-            let src_resolved = find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.from.clone()))
-                .ok_or_else(|| anyhow!("Source node not found: {}", params.from))?;
-            let tgt_resolved = find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.to.clone()))
-                .ok_or_else(|| anyhow!("Target node not found: {}", params.to))?;
+            let src_resolved =
+                find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.from.clone()))
+                    .ok_or_else(|| anyhow!("Source node not found: {}", params.from))?;
+            let tgt_resolved =
+                find_node_by_id_or_label(&r_state.graph_data, &NodeId(params.to.clone()))
+                    .ok_or_else(|| anyhow!("Target node not found: {}", params.to))?;
 
-            let path_opt = find_shortest_path(&r_state.graph, &r_state.node_map, &src_resolved, &tgt_resolved)?;
+            let path_opt = find_shortest_path(
+                &r_state.graph,
+                &r_state.node_map,
+                &src_resolved,
+                &tgt_resolved,
+            )?;
             Ok(serde_json::to_value(path_opt)?)
         }
         "graph_reindex" => {
@@ -367,8 +408,14 @@ fn handle_tool_call(
             let mut w_state = state_lock.write().map_err(|_| anyhow!("RwLock poisoned"))?;
 
             // Remove old nodes and edges originating from this file path
-            w_state.graph_data.nodes.retain(|n| n.source_file != params.file_path);
-            w_state.graph_data.edges.retain(|e| e.source_file != params.file_path);
+            w_state
+                .graph_data
+                .nodes
+                .retain(|n| n.source_file != params.file_path);
+            w_state
+                .graph_data
+                .edges
+                .retain(|e| e.source_file != params.file_path);
 
             // Add new nodes and edges
             w_state.graph_data.nodes.extend(extracted.nodes);
@@ -412,4 +459,37 @@ fn find_node_by_id_or_label(graph_data: &GraphOutput, input: &NodeId) -> Option<
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_load_failure_falls_back_to_empty_graph() -> Result<()> {
+        // A corrupt graph file must not kill the server: load() reports the
+        // error, and empty() still produces a usable, queryable state.
+        let dir = std::env::temp_dir().join(format!("graphify-mcp-test-{}", std::process::id()));
+        let out = dir.join("graphify-out");
+        fs::create_dir_all(&out)?;
+        let mut f = fs::File::create(out.join("graph.json"))?;
+        f.write_all(br#"{"edges":[{"kind":"contains"}]}"#)?;
+
+        let cwd = std::env::current_dir()?;
+        std::env::set_current_dir(&dir)?;
+        let load_result = GraphState::load();
+        let empty = GraphState::empty()?;
+        std::env::set_current_dir(cwd)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(
+            load_result.is_err(),
+            "corrupt graph file must surface a load error"
+        );
+        assert_eq!(empty.graph_data.nodes.len(), 0);
+        assert_eq!(empty.graph_data.edges.len(), 0);
+        assert!(find_node_by_id_or_label(&empty.graph_data, &NodeId("x".into())).is_none());
+        Ok(())
+    }
 }
