@@ -34,6 +34,6 @@
 
 ## 6. Documentation and future crate boundary
 
-- [ ] 6.1 Synchronize the approved memory/plugin boundary into `docs/architecture-memory-plugin.md`, `docs/plugin_system.md`, and `docs/core.md`.
-- [ ] 6.2 Document the current `graphify-llm` responsibility split and defer `graphify-memory` extraction or rename to a separate migration change.
-- [ ] 6.3 Record verification evidence and validate the OpenSpec change.
+- [x] 6.1 Synchronize the approved memory/plugin boundary into `docs/architecture-memory-plugin.md`, `docs/plugin_system.md`, and `docs/core.md`.
+- [x] 6.2 Document the current `graphify-llm` responsibility split and defer `graphify-memory` extraction or rename to a separate migration change.
+- [x] 6.3 Record verification evidence and validate the OpenSpec change.
