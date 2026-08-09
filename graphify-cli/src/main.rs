@@ -196,6 +196,31 @@ pub enum HandoffCommand {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// 安裝/移除雙軌 agent skill（MCP + CLI 備援）
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum SkillCommand {
+    /// 安裝 SKILL.md 到本地 agent 生態（managed copy，可重複執行）
+    Install {
+        /// 目標 agent：opencode,claude,cursor,cline（逗號分隔；預設：偵測到的全部）
+        #[arg(long)]
+        agent: Option<String>,
+        /// 安裝範圍：user（$HOME）| project（cwd）；預設兩者皆裝
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// 移除已安裝的 skill（只刪帶 managed 標記的檔案）
+    Uninstall {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        scope: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -684,9 +709,9 @@ fn run_workspace_status(workspace_key: Option<String>) -> Result<()> {
 
 /// 透過內嵌的 handoff plugin 執行 relay* 工具。
 ///
-/// 以目前目錄合成 WorkspaceContext 綁定 plugin，並將全域 graphify.db 路徑
+/// 以目前目錄合成 `WorkspaceContext` 綁定 plugin，並將全域 graphify.db 路徑
 /// （graphify-registry XDG 解析）注入 `.with_registry_path` — relayClose 的
-/// HandoffSnapshot 同步即寫入同一資料庫。
+/// `HandoffSnapshot` 同步即寫入同一資料庫。
 fn run_handoff(command: HandoffCommand) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let mut plugin =
@@ -724,9 +749,70 @@ fn run_handoff(command: HandoffCommand) -> Result<()> {
         HandoffCommand::Add { file, repo } => {
             plugin.relay_add(Path::new(&file), repo.as_deref())?
         }
+        HandoffCommand::Skill { command } => run_skill_command(command)?,
     };
     println!("{out}");
     Ok(())
+}
+
+/// `graphify handoff skill` — 安裝/移除雙軌 SKILL.md 到本地 agent 生態。
+fn run_skill_command(command: SkillCommand) -> Result<String> {
+    use graphify_plugin_handoff::skill_install::{self, Agent, Scope};
+
+    let resolve_agents = |explicit: &Option<String>| -> Result<Vec<Agent>> {
+        if let Some(list) = explicit {
+            list.split(',')
+                .map(|s| Agent::parse(s.trim()).ok_or_else(|| anyhow!("unknown agent: {s}")))
+                .collect()
+        } else {
+            let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("$HOME is not set"))?;
+            let cwd = std::env::current_dir()?;
+            let found = skill_install::detect_agents(Path::new(&home), &cwd);
+            if found.is_empty() {
+                return Err(anyhow!(
+                    "no known agent config found — pass --agent opencode|claude|cursor|cline"
+                ));
+            }
+            Ok(found)
+        }
+    };
+
+    let resolve_scopes = |explicit: &Option<String>| -> Result<Vec<Scope>> {
+        if let Some(s) = explicit {
+            let scope = Scope::parse(s).ok_or_else(|| anyhow!("unknown scope: {s}"))?;
+            Ok(vec![scope])
+        } else {
+            Ok(vec![Scope::User, Scope::Project])
+        }
+    };
+
+    let (agents_opt, scopes_opt, is_install) = match command {
+        SkillCommand::Install { agent, scope } => (agent, scope, true),
+        SkillCommand::Uninstall { agent, scope } => (agent, scope, false),
+    };
+
+    let agents = resolve_agents(&agents_opt)?;
+    let mut lines = Vec::new();
+    for scope in resolve_scopes(&scopes_opt)? {
+        if is_install {
+            let report = skill_install::install(&agents, scope)?;
+            for path in &report.installed {
+                lines.push(format!("installed: {}", path.display()));
+            }
+            for (path, why) in &report.skipped {
+                lines.push(format!("skipped: {} — {why}", path.display()));
+            }
+        } else {
+            let report = skill_install::uninstall(&agents, scope)?;
+            for path in &report.removed {
+                lines.push(format!("removed: {}", path.display()));
+            }
+            for (path, why) in &report.skipped {
+                lines.push(format!("skipped: {} — {why}", path.display()));
+            }
+        }
+    }
+    Ok(lines.join("\n"))
 }
 
 fn run_index(
