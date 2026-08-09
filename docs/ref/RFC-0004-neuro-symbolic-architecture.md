@@ -8,6 +8,8 @@ Created: 2026-08-09
 
 Target Release: Graphify v2.0-alpha
 
+> Amendment 2026-08-09: Section 1.3.1 新增 Local-to-Server 單向 Rehydration 決策（Delta Amendment），補齊雙軌向量存取閉環。原始條文未改動。
+
 ## Executive Summary
 
 Graphify 旨在升級為兼具 16ms 符號拓撲（Petgraph AST） 與 長效向量記憶（Qdrant Neural Memory） 的雙模架構（Neuro-Symbolic Architecture）。本 RFC 規範了 Graphify 的全域記憶體矩陣、三層儲存設計、原生與第三方 Plugin 隔離機制、.toon 豐富化（Enrichment）規範、以及跨 Session / 跨 Agent 的 HandoffSnapshot 接力恢復流程。
@@ -113,6 +115,21 @@ impl GraphifyVectorStore {
     }
 }
 ```
+
+### 1.3.1 Local-to-Server Reconnection & Data Rehydration (新增)
+
+當 Graphify Memory Engine 在啟動或 Re-connect 偵測到 External Qdrant Server 恢復健康時，若發現本地 `LocalPath` 存有離線期間寫入的 Delta 資料，必須執行**「單向點對點遷移事件 (One-Way Delta Rehydration)」**：
+
+1. **Trigger Condition (觸發時機)**:
+   - 引擎初始化（`init_with_fallback`）成功連上 External Server **且** 本地 Local Qdrant Directory 存在未同步的 Delta 紀錄。
+
+2. **Sync Protocol (同步協議)**:
+   - **Step 1 (Scan & Push)**: 讀取 Local Collection 中 `created_at > last_server_sync_timestamp` 的 `PluginMemoryEnvelope` 點位。
+   - **Step 2 (Upsert to Server)**: 批次 (Batch) 寫入 External Server 對應的 `graphify_plugin_<id>` Collection。憑藉 `record_id` (確定性 Hash) 執行天然冪等 (Idempotent) 的 `Upsert`，自動覆蓋免去衝突處理。
+   - **Step 3 (Local Drain/Mark)**: 同步成功後，更新 SQLite `last_synced_at` 時間戳，並清空（或標記為已同步）Local Delta 快取。
+
+3. **Execution Boundary**:
+   - 同步過程為一次性阻塞事件 (One-off Event)，完成後即將底層 `StorageMode` 切換至 `ServerUrl` 模式，避免常駐雙寫的複雜度。
 
 ## 2. Plugin Domain Memory & Access Rules
 
@@ -240,6 +257,7 @@ pub struct HandoffSnapshot {
 - **AST Topology Fault-Tolerance**: Petgraph 及 .toon 計算 100% 保持正常（16ms 響應）。
 - **Explicit Status Report**: 向量查詢介面明確回傳 `MemoryStatus::Unavailable` 錯誤，不回傳假資料（Null/Hash Vectors）或空結果，避免 Agent 產生語意誤判。
 - **Resync Pipeline**: Provider 恢復運作後，背景執行 memory sync 補齊向量，無須重建已有 AST 圖譜。
+- **Local-to-Server Rehydration**: 當向量引擎由 Qdrant Local 降級模式恢復至 Server 模式時，依 §1.3.1 執行單向 Delta Rehydration（Scan & Push → Idempotent Upsert → Local Drain/Mark），一次性阻塞事件，無常駐雙寫。
 
 ## 6. Native Plugin Specifications
 
