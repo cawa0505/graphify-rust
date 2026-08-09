@@ -133,7 +133,7 @@ Plugin 的長期記憶分三層，`workspace_key` 為跨層路由鍵（見 `docs
   }
   ```
 
-  系統從 `plugin_id` 衍生實體名稱並驗證；plugin 不得提供原始 collection 名稱或 credentials（`graphify-llm::plugin_memory::plugin_collection_name`）。`HandoffSnapshot` 用可重建的查詢條件（workspace_key + node IDs + source paths）取代 Qdrant point ID。
+  系統從 `plugin_id` 衍生實體名稱並驗證；plugin 不得提供原始 collection 名稱或 credentials（`graphify-memory::plugin_memory::plugin_collection_name`）。`HandoffSnapshot` 用可重建的查詢條件（workspace_key + node IDs + source paths）取代 Qdrant point ID。
 - **Layer 3 外部知識**（OpenDoc / GitHub / Linear 等 adapter）：非本架構核心，由各 adapter 管理。
 
 **不可寫核心記憶**：plugin-domain 寫入只允許進 Layer 2 的自身 namespace；核心記憶同步永遠由 indexing pipeline 擁有，不依賴任何 plugin 載入或收到 graph-update 事件。

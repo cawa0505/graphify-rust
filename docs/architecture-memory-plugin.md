@@ -210,7 +210,7 @@ each phase requires verification before the next begins.
 | Phase 2 | Third-party MCP query integration: `graphify_memory_query` tool through the restricted memory service boundary | ✅ Done |
 | Phase 3 | Plugin-domain memory infrastructure: versioned `PluginMemoryEnvelope<T>`, per-plugin collection derivation, read/write boundaries | ✅ Done |
 | Phase 4 | `.toon` enrichment: reserved `plugin_data.<plugin_id>` container, core tolerance of absent/unknown entries | ✅ Done |
-| Phase 5 | Crate split: extract `graphify-memory` (memory.rs + plugin_memory.rs + memory config); keep `graphify-llm` as the general LLM gateway. In the same change, add the minimal `CoreLlmProvider` trait + `PluginContext` skeleton (see v2.0-alpha supplement). No multi-model routing, no plugin-specialized model clients (Shieldstral etc. stay in Phase 7) | ⏳ Planned |
+| Phase 5 | Crate split: extract `graphify-memory` (memory.rs + plugin_memory.rs + memory config); keep `graphify-llm` as the general LLM gateway. In the same change, add the minimal `CoreLlmProvider` trait + `PluginContext` skeleton (see v2.0-alpha supplement). No multi-model routing, no plugin-specialized model clients (Shieldstral etc. stay in Phase 7) | ✅ Done |
 | Phase 6 | Verification, docs sync, OpenSpec archive of memory-plugin-integration-v1 | ⏳ Planned |
 | Phase 7 | Three native plugins (opendoc / review / handoff) in the GraphifyPlugins repository | ⏳ Planned |
 

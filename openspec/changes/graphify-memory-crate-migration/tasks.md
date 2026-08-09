@@ -36,11 +36,23 @@
 
 ## 4. Verification and archive
 
-- [ ] 4.1 Full workspace verification: build, `cargo test --workspace`, clippy
+- [x] 4.1 Full workspace verification: build, `cargo test --workspace`, clippy
   `-D warnings`, fmt — zero warnings.
-- [ ] 4.2 Regression check: memory query API, MCP tool, plugin-domain memory,
+- [x] 4.2 Regression check: memory query API, MCP tool, plugin-domain memory,
   `.toon plugin_data` tests all pass unchanged.
-- [ ] 4.3 Sync docs (`docs/core.md`, `docs/plugin_system.md`,
+- [x] 4.3 Sync docs (`docs/core.md`, `docs/plugin_system.md`,
   `docs/architecture-memory-plugin.md`, crate lists) to the new layout.
-- [ ] 4.4 Record verification evidence and `openspec validate
+- [x] 4.4 Record verification evidence and `openspec validate
   graphify-memory-crate-migration --strict`.
+
+### Verification evidence (2026-08-09)
+
+- `cargo test --workspace`: 70/70 passed (graphify-core 17, graphify-memory 15,
+  graphify-llm 13 + 1 ignored homelab integration, graphify-mcp 20,
+  graphify-cli 4, doc-tests 1).
+- `cargo clippy --workspace --all-targets -- -D warnings`: zero warnings.
+- `cargo fmt --all`: clean.
+- `openspec validate graphify-memory-crate-migration --strict`: valid.
+- Regression: memory query (`MemorySearcher`/`graphify_memory_query`),
+  plugin-domain memory (JSONL namespaces), `.toon plugin_data` tests all pass
+  unchanged after the crate move.

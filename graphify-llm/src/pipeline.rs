@@ -4,12 +4,18 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct AutoRotatePipeline {
     config: LLMConfig,
     client: Client,
     counter: AtomicUsize,
+    // ponytail: lazy sync gateway facade bridge (CoreLlmProvider) for plugin
+    // callers; async callers keep using extract_semantic_link directly. Lazily
+    // built so constructing a pipeline inside an existing tokio runtime (tests,
+    // async callers) never creates a nested runtime.
+    pub(crate) gateway_runtime: OnceLock<tokio::runtime::Runtime>,
 }
 
 fn get_jitter() -> u64 {
@@ -19,6 +25,7 @@ fn get_jitter() -> u64 {
 }
 
 impl AutoRotatePipeline {
+    /// Build the pipeline with provider rotation and a lazy sync gateway bridge.
     pub fn new(config: LLMConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -28,6 +35,7 @@ impl AutoRotatePipeline {
             config,
             client,
             counter: AtomicUsize::new(0),
+            gateway_runtime: OnceLock::new(),
         }
     }
 

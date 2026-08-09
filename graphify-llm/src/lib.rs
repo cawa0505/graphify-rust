@@ -10,11 +10,13 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 
 pub mod config;
+pub mod gateway;
 pub mod gbnf;
 pub mod pipeline;
 
 pub use config::{LLMConfig, PluginConfig, PluginsConfig, Provider, ProviderType};
 pub use gbnf::get_json_schema_gbnf;
+pub use gateway::{ChatMessage, CoreLlmProvider, LlmError, PluginContext};
 pub use pipeline::AutoRotatePipeline;
 
 // Compatibility re-exports: memory infrastructure now lives in graphify-memory.
