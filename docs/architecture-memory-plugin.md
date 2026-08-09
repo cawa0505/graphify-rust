@@ -238,6 +238,24 @@ rename. Per the decision recorded above, `graphify-memory` was chosen over
   boundary; a system-managed write API would be a separate OpenSpec change.
 - Source: `docs/ref/graphify-v2-alpha-architecture-supplement.md` (verbatim).
 
+### RFC-0004 roadmap (P1–P7)
+
+Implementation tracking for `docs/ref/RFC-0004-neuro-symbolic-architecture.md`.
+Sequential; each phase requires verification before the next begins.
+
+| Phase | Scope | Status |
+| ----- | ----- | ------ |
+| P1 | HandoffSnapshot 雙層補全（`MemoryQueryCriteria` 強型別 + snapshot 結構於 `graphify-core`，P2 registry 欄位對齊） | ✅ Done |
+| P2 | SQLite Global Registry（`graphify-registry`：workspaces / plugin_registrations / handoff_registry 三表、被動 resync、TTL+pruning、`graphify workspace` CLI、XDG 路徑） | ✅ Done |
+| P3 | TUI Stage 1（workspace switcher + 單列 status line，綁定 SQLite registry） | ⏳ Planned |
+| P4 | Qdrant Local fallback（init_with_fallback 雙軌 + 一鍵 rehydration，1.3.1） | ⏳ Planned |
+| P5 | TUI Stage 2（Full Plugins & Memory console，health / domain memory / relay trace，依賴 P4 的雙軌狀態） | ⏳ Planned |
+| P6 | qdrant-grpc-incremental（deferred，P4 之後） | ⏳ Planned |
+| P7 | 三個 native plugins（GraphifyPlugins repo，本 repo 僅提供基礎建設與文件） | ⏳ Planned |
+
+P2 是 P3/P4 的共同前置：SQLite registry 同時支撐 workspace 綁定與
+rehydration 時間戳。P7 不在本 repo 實作範圍（見 §Phase 7 scope 界定）。
+
 ## References
 
 - `docs/core.md`: Core engine and `GraphifyPlugin` trait definition.

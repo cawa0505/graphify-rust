@@ -84,3 +84,18 @@ performs the MCP initialize handshake over stdio, aggregates tools under the
 `graph_reindex` or `graphify_notify_plugins`, it sends a
 `notifications/graph_updated` notification containing `kind` and
 `workspace_key`.
+
+### Global Registry database
+
+Cross-workspace state lives in one SQLite database owned by the
+`graphify-registry` crate (workspaces, plugin registrations, handoff
+snapshots — see `docs/plugin_system.md` §3.6). Path resolution
+(`graphify_registry::registry_db_path`, Linux):
+
+1. `GRAPHIFY_REGISTRY_PATH` if set (explicit override).
+2. `XDG_DATA_HOME/graphify/graphify.db` if `XDG_DATA_HOME` is set.
+3. `~/.local/share/graphify/graphify.db` via `HOME`.
+
+No `HOME` (e.g. container) falls back to `./graphify.db` in the current
+directory. The database is created on first open with schema v1; no manual
+setup required.

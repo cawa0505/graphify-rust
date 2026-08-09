@@ -1,0 +1,21 @@
+[package]
+name = "graphify-registry"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Core types (HandoffSnapshot, workspace_key)
+graphify-core = { path = "../graphify-core" }
+
+# Registry storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[lints]
+workspace = true

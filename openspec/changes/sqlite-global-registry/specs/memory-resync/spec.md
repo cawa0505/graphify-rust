@@ -23,7 +23,11 @@ The system SHALL probe the embedding provider with a bounded 10ms ping at CLI co
 - **THEN** the system triggers the MemorySyncJob, and on completion sets `status = 'Ready'` and resumes memory-backed operations
 
 ### Requirement: MemorySyncJob execution scope
-The MemorySyncJob SHALL re-synchronize the pending embedding backlog (records written while `Unavailable`) into the recovered provider, then update `last_synced_at` as part of rehydration (RFC-0004 §1.3.1). A failed sync SHALL leave `status = 'Unavailable'` and preserve all pending records.
+The MemorySyncJob SHALL re-synchronize the pending embedding backlog (records written while `Unavailable`) into the recovered provider by:
+- Querying SQLite for `handoff_registry` entries where `created_at > last_synced_at` (per workspace/plugin),
+- Performing a batch upsert via the Qdrant REST API (using the existing `upsert_rest` path) for those entries,
+- On success, updating `last_synced_at` to the latest `created_at` synced.
+A failed sync SHALL leave `status = 'Unavailable'` and preserve all pending records.
 
 #### Scenario: Sync failure preserves data
 - **WHEN** the MemorySyncJob fails partway through

@@ -91,7 +91,7 @@ impl ReviewPayload {
 /// Deliberately replaces Qdrant point IDs: re-running these criteria against
 /// the memory service re-finds the same records after re-index or collection
 /// migration (RFC-0004 §4.1).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryQueryCriteria {
     pub target_symbols: Vec<String>,
     pub domain_categories: Vec<String>,

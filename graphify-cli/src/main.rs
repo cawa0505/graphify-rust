@@ -8,6 +8,7 @@ pub mod skill;
 pub mod snapshot;
 pub mod tui;
 pub mod ui;
+pub mod workspace;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -96,12 +97,33 @@ enum Commands {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    /// Manage graphify workspaces (list, switch, status)
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PluginCommand {
     /// Manually trigger graph-update hooks for all bound plugins
     RunHooks,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum WorkspaceCommand {
+    /// List all registered workspaces
+    List,
+    /// Switch the active workspace
+    Switch {
+        /// Workspace key to activate
+        workspace_key: String,
+    },
+    /// Show status of a workspace
+    Status {
+        /// Workspace key (defaults to active)
+        workspace_key: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -132,6 +154,11 @@ fn main() -> Result<()> {
         } => run_index(&path, config.as_deref(), output.as_deref(), force)?,
         Commands::Plugin { command } => match command {
             PluginCommand::RunHooks => run_hooks()?,
+        },
+        Commands::Workspace { command } => match command {
+            WorkspaceCommand::List => run_workspace_list()?,
+            WorkspaceCommand::Switch { workspace_key } => run_workspace_switch(&workspace_key)?,
+            WorkspaceCommand::Status { workspace_key } => run_workspace_status(workspace_key)?,
         },
     }
     Ok(())
@@ -542,6 +569,43 @@ fn run_hooks() -> Result<()> {
         "[graphify] Broadcast manual graph-update event to {} plugin(s).",
         host.len()
     );
+    Ok(())
+}
+
+/// List all registered workspaces from the global registry.
+fn run_workspace_list() -> Result<()> {
+    let rows = workspace::list_workspaces()?;
+    if rows.is_empty() {
+        println!("[graphify] No registered workspaces.");
+        return Ok(());
+    }
+    for row in rows {
+        let marker = if row.is_active { "*" } else { " " };
+        println!("{marker} {} {}", row.workspace_key, row.root_path);
+    }
+    Ok(())
+}
+
+/// Switch the active workspace in the global registry.
+fn run_workspace_switch(workspace_key: &str) -> Result<()> {
+    workspace::switch_workspace(workspace_key)?;
+    println!("[graphify] Active workspace: {workspace_key}");
+    Ok(())
+}
+
+/// Show the active workspace, or the status of a named one.
+fn run_workspace_status(workspace_key: Option<String>) -> Result<()> {
+    if let Some(key) = workspace_key {
+        if let Some(row) = workspace::workspace_status(&key)? {
+            println!("{} {}", row.workspace_key, row.root_path);
+        } else {
+            println!("[graphify] Workspace not registered: {key}");
+        }
+    } else if let Some(row) = workspace::active_workspace()? {
+        println!("{} {}", row.workspace_key, row.root_path);
+    } else {
+        println!("[graphify] No active workspace.");
+    }
     Ok(())
 }
 

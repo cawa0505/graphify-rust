@@ -138,6 +138,16 @@ Plugin 的長期記憶分三層，`workspace_key` 為跨層路由鍵（見 `docs
 
 **不可寫核心記憶**：plugin-domain 寫入只允許進 Layer 2 的自身 namespace；核心記憶同步永遠由 indexing pipeline 擁有，不依賴任何 plugin 載入或收到 graph-update 事件。
 
+### 3.6 Global Registry（sqlite-global-registry，v1）
+
+跨 workspace 的註冊與同步狀態由 `graphify-registry` crate 以單一 SQLite 資料庫集中管理（路徑解析見 `docs/core.md`，`GRAPHIFY_REGISTRY_PATH` / `XDG_DATA_HOME` override）：
+
+- **`workspaces`** — workspace 註冊（`workspace_key`、`root_path`、`is_active`、`last_indexed_at`）。CLI 提供 `graphify workspace list/switch/status`（TUI Stage 1 使用）。
+- **`plugin_registrations`** — plugin ↔ workspace ↔ Qdrant collection 映射與 `last_synced_at`（一鍵 rehydration 的時間戳來源）、`status`（`Ready` / `Unavailable` 兩態）。
+- **`handoff_registry`** — `HandoffSnapshot` 全域索引：`expires_at = created_at + 7 天`（TTL），每 workspace 上限 20 筆（FIFO pruning），寫入時單一 transaction 完成。
+
+同步為被動式：無常駐 daemon（#3097），由 `graphify-registry::resync::check_and_resync` 在觸發點（CLI / TUI）以 10ms ping 檢查 provider 可用性，不可用即回 `Unavailable`。一鍵 rehydration（1.3.1）：`created_at > last_synced_at` 的 envelope 以 `record_id` idempotent upsert 回外部伺服器後更新 `last_synced_at`。
+
 ## 4. 三大核心 Plugin 詳細設計 (Plugin Specifications)
 
 ### 4.1 Code Review Plugin (`graphify-plugin-review`)
