@@ -15,8 +15,8 @@ pub mod gbnf;
 pub mod pipeline;
 
 pub use config::{LLMConfig, PluginConfig, PluginsConfig, Provider, ProviderType};
-pub use gbnf::get_json_schema_gbnf;
 pub use gateway::{ChatMessage, CoreLlmProvider, LlmError, PluginContext};
+pub use gbnf::get_json_schema_gbnf;
 pub use pipeline::AutoRotatePipeline;
 
 // Compatibility re-exports: memory infrastructure now lives in graphify-memory.

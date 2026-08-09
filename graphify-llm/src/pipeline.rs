@@ -3,8 +3,8 @@ use crate::gbnf::get_json_schema_gbnf;
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct AutoRotatePipeline {
