@@ -21,6 +21,9 @@ pub use graph::{build_graph, find_shortest_path, query_bfs};
 pub use plugin::{
     GraphUpdateEvent, GraphUpdateKind, GraphifyPlugin, WorkspaceContext, derive_workspace_key,
 };
-pub use plugin_memory::{HandoffPayload, OpenDocPayload, PluginMemoryEnvelope, ReviewPayload};
+pub use plugin_memory::{
+    HandoffPayload, HandoffSnapshot, MemoryQueryCriteria, OpenDocPayload, PluginMemoryEnvelope,
+    ReviewPayload,
+};
 pub use toon::{from_toon, to_toon};
 pub use types::{Edge, ExtractionResult, FileType, GraphMetadata, GraphOutput, Node, NodeId};

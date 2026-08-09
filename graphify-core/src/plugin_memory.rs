@@ -86,6 +86,18 @@ impl ReviewPayload {
     pub const SCHEMA_VERSION: u32 = 1;
 }
 
+/// Strongly-typed query conditions that reconstruct a memory neighborhood.
+///
+/// Deliberately replaces Qdrant point IDs: re-running these criteria against
+/// the memory service re-finds the same records after re-index or collection
+/// migration (RFC-0004 §4.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryQueryCriteria {
+    pub target_symbols: Vec<String>,
+    pub domain_categories: Vec<String>,
+    pub search_terms: Vec<String>,
+}
+
 /// Handoff domain payload: task state and reconstructable memory references.
 ///
 /// `reconstructable_query_metadata` deliberately replaces Qdrant point IDs with
@@ -96,17 +108,32 @@ pub struct HandoffPayload {
     pub task_goal: String,
     pub pinned_node_ids: Vec<String>,
     pub focused_subgraph_toon: String,
-    pub reconstructable_query_metadata: serde_json::Value,
+    pub reconstructable_query_metadata: MemoryQueryCriteria,
 }
 
 impl HandoffPayload {
     pub const SCHEMA_VERSION: u32 = 1;
 }
 
+/// Session-tracking container wrapping a [`HandoffPayload`] (two-tier model).
+///
+/// Tier 1 — [`HandoffPayload`]: domain record persisted to plugin storage.
+/// Tier 2 — [`HandoffSnapshot`]: global container tracked by the agent, TUI,
+/// and the `SQLite` `` `handoff_registry` ``; carries the TTL window (`expires_at`)
+/// used for auto-pruning. Mirrors RFC-0004 §4.2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffSnapshot {
+    pub snapshot_id: String,
+    pub session_id: String,
+    pub workspace_key: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub payload: HandoffPayload,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_envelope_roundtrip_with_opendoc_payload() -> Result<(), serde_json::Error> {
@@ -153,16 +180,46 @@ mod tests {
             task_goal: "wire memory query tool".to_string(),
             pinned_node_ids: vec!["N42".to_string()],
             focused_subgraph_toon: "metadata:\n  format_version: \"1\"\n".to_string(),
-            reconstructable_query_metadata: json!({
-                "workspace_key": "ws_backend_core_9921",
-                "query": "memory query API",
-                "limit": 10,
-            }),
+            reconstructable_query_metadata: MemoryQueryCriteria {
+                target_symbols: vec!["memory_query".to_string()],
+                domain_categories: vec!["mcp".to_string()],
+                search_terms: vec!["memory query API".to_string()],
+            },
         };
         let encoded = serde_json::to_string(&payload)?;
         assert!(
             !encoded.contains("point_id"),
             "point IDs must not leak: {encoded}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handoff_snapshot_roundtrip() -> Result<(), serde_json::Error> {
+        let snapshot = HandoffSnapshot {
+            snapshot_id: "snap-001".to_string(),
+            session_id: "sess-001".to_string(),
+            workspace_key: "ws_backend_core_9921".to_string(),
+            created_at: 1_786_252_800,
+            expires_at: 1_786_857_600,
+            payload: HandoffPayload {
+                schema_version: HandoffPayload::SCHEMA_VERSION,
+                task_goal: "continue review".to_string(),
+                pinned_node_ids: vec!["N42".to_string()],
+                focused_subgraph_toon: "metadata:\n  format_version: \"1\"\n".to_string(),
+                reconstructable_query_metadata: MemoryQueryCriteria {
+                    target_symbols: vec!["ReviewPayload".to_string()],
+                    domain_categories: vec!["review".to_string()],
+                    search_terms: vec!["finding severity".to_string()],
+                },
+            },
+        };
+        let encoded = serde_json::to_string(&snapshot)?;
+        let decoded: HandoffSnapshot = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, snapshot);
+        assert!(
+            !encoded.contains("point_id"),
+            "snapshot must not leak point IDs: {encoded}"
         );
         Ok(())
     }
