@@ -805,12 +805,27 @@ fn run_handoff(command: HandoffCommand) -> Result<()> {
 /// `graphify opendoc` — 文件↔程式碼追蹤與 drift 偵測（內嵌 graphify-plugin-opendoc）。
 ///
 /// 比照 `handoff` 整合模式：cwd 合成 `WorkspaceContext`、全域 graphify.db
-/// 路徑注入。Layer 2 backend 預設為 NoOp（無 OD 依賴）。
-fn run_opendoc(command: OpendocCommand) -> Result<()> {
+/// 路徑注入。Layer 2 backend：讀 `OD_BASE_URL` env（如 `http://127.0.0.1:8080`）。
+fn od_base_url() -> Option<String> {
+    std::env::var("OD_BASE_URL").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// 建構 OpendocPlugin（注入 registry + Layer 2 backend）並 bind 到 cwd。
+fn build_opendoc_for_cli() -> Result<graphify_plugin_opendoc::OpendocPlugin> {
     let cwd = std::env::current_dir()?;
-    let plugin = OpendocPlugin::new()
-        .with_registry_path(graphify_registry::registry_db_path())
-        .bind_for_cli(&cwd);
+    let mut plugin = OpendocPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path());
+    if let Some(url) = od_base_url() {
+        plugin = plugin.with_backend(Box::new(
+            graphify_plugin_opendoc::RestBackend::new(&url),
+        ));
+    }
+    Ok(plugin.bind_for_cli(&cwd))
+}
+
+/// `graphify opendoc` — 文件↔程式碼追蹤與 drift 偵測（內嵌 graphify-plugin-opendoc）。
+fn run_opendoc(command: OpendocCommand) -> Result<()> {
+    let plugin = build_opendoc_for_cli()?;
     match command {
         OpendocCommand::Index { doc_paths } => {
             let (n, msg) = if doc_paths.is_empty() {

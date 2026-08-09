@@ -222,9 +222,18 @@ fn build_relay_plugin() -> RelayPlugin {
 /// MCP tools below degrade to empty results when no workspace mapping is set.
 fn build_opendoc_plugin() -> OpendocPlugin {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    OpendocPlugin::new()
-        .with_registry_path(graphify_registry::registry_db_path())
-        .bind_for_cli(&cwd)
+    let mut p = OpendocPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path());
+    // Layer 2：讀 `OD_BASE_URL` env，設定且非空時注入 RestBackend 直連 OD。
+    if let Some(url) = std::env::var("OD_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        p = p.with_backend(Box::new(
+            graphify_plugin_opendoc::RestBackend::new(&url),
+        ));
+    }
+    p.bind_for_cli(&cwd)
 }
 
 fn handle_request(
