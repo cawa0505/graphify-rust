@@ -1,3 +1,7 @@
+## Scheduling (2026-08-09)
+
+**Deferred**：本 change 排在 Qdrant Local fallback（RFC-0004 的 `init_with_fallback` 雙軌：embedded Local ↔ Server 自動升降級）之後執行。理由：Local embedded 引擎與本 change 的傳輸層優化（REST→gRPC、HNSW 批次上傳）會互相影響，先定案儲存引擎選擇，再優化傳輸層，避免二次重做。順序：TUI → Qdrant Local fallback → qdrant-grpc-incremental。
+
 ## Why
 
 To optimize vector ingestion performance and RAG query efficiency for massive codebases, GraphifyRust needs a transition from standard serial REST indexing to high-performance batch uploading and smart pre-filtering. Standard sequential indexing over high-latency networks wastes CPU, GPU, and network handshakes. Incremental indexing via file hashing prevents redundant embedding generation, and metadata indexing on Qdrant prevents brute-force scans on million-vector databases.
