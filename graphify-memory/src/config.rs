@@ -15,6 +15,30 @@ fn default_indexing_threshold() -> usize {
     20000
 }
 
+fn default_local_fallback_enabled() -> bool {
+    false
+}
+
+fn default_local_bin_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(".cache/graphify/qdrant")
+}
+
+fn default_local_storage_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(".local/share/graphify/qdrant-storage")
+}
+
+fn default_local_version() -> String {
+    "v1.19.0".to_string()
+}
+
+fn default_local_http_port() -> u16 {
+    16_333
+}
+
+fn default_local_grpc_port() -> u16 {
+    16_334
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QdrantConfig {
     pub url: String,
@@ -25,6 +49,18 @@ pub struct QdrantConfig {
     pub grpc: bool,
     #[serde(default = "default_indexing_threshold")]
     pub indexing_threshold: usize,
+    #[serde(default = "default_local_fallback_enabled")]
+    pub local_fallback_enabled: bool,
+    #[serde(default = "default_local_bin_dir")]
+    pub local_bin_dir: std::path::PathBuf,
+    #[serde(default = "default_local_storage_dir")]
+    pub local_storage_dir: std::path::PathBuf,
+    #[serde(default = "default_local_version")]
+    pub local_version: String,
+    #[serde(default = "default_local_http_port")]
+    pub local_http_port: u16,
+    #[serde(default = "default_local_grpc_port")]
+    pub local_grpc_port: u16,
 }
 
 impl Default for QdrantConfig {
@@ -36,6 +72,12 @@ impl Default for QdrantConfig {
             distance: "Cosine".to_string(),
             grpc: false,
             indexing_threshold: 20000,
+            local_fallback_enabled: false,
+            local_bin_dir: default_local_bin_dir(),
+            local_storage_dir: default_local_storage_dir(),
+            local_version: default_local_version(),
+            local_http_port: default_local_http_port(),
+            local_grpc_port: default_local_grpc_port(),
         }
     }
 }
@@ -95,4 +137,78 @@ impl Default for LongTermMemoryConfig {
 pub struct MemoryConfig {
     pub short_term: ShortTermMemoryConfig,
     pub long_term: LongTermMemoryConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn qdrant_toml(fields: &str) -> String {
+        format!(
+            r#"
+url = "http://localhost:6333"
+api_key = "secret"
+collection = "graphify_memory"
+distance = "Cosine"
+{fields}
+"#
+        )
+    }
+
+    #[test]
+    fn parse_defaults_without_local_fields() -> Result<(), Box<dyn std::error::Error>> {
+        // A legacy config without any local-fallback fields must parse with defaults.
+        let cfg: QdrantConfig = toml::from_str(&qdrant_toml(""))?;
+        assert_eq!(cfg.url, "http://localhost:6333");
+        assert_eq!(cfg.collection, "graphify_memory");
+        assert!(!cfg.local_fallback_enabled);
+        assert_eq!(cfg.local_version, "v1.19.0");
+        assert_eq!(cfg.local_http_port, 16_333);
+        assert_eq!(cfg.local_grpc_port, 16_334);
+        assert_eq!(
+            cfg.local_bin_dir,
+            std::path::PathBuf::from(".cache/graphify/qdrant")
+        );
+        assert_eq!(
+            cfg.local_storage_dir,
+            std::path::PathBuf::from(".local/share/graphify/qdrant-storage")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_explicit_local_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg: QdrantConfig = toml::from_str(&qdrant_toml(
+            r#"
+local_fallback_enabled = true
+local_version = "v1.19.0"
+local_http_port = 16333
+local_grpc_port = 16334
+local_bin_dir = "/tmp/qdrant-bin"
+local_storage_dir = "/tmp/qdrant-storage"
+"#,
+        ))?;
+        assert!(cfg.local_fallback_enabled);
+        assert_eq!(cfg.local_version, "v1.19.0");
+        assert_eq!(cfg.local_http_port, 16_333);
+        assert_eq!(
+            cfg.local_bin_dir,
+            std::path::PathBuf::from("/tmp/qdrant-bin")
+        );
+        assert_eq!(
+            cfg.local_storage_dir,
+            std::path::PathBuf::from("/tmp/qdrant-storage")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialized_default_roundtrips() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = QdrantConfig::default();
+        let s = toml::to_string(&cfg)?;
+        let parsed: QdrantConfig = toml::from_str(&s)?;
+        assert_eq!(parsed.local_fallback_enabled, cfg.local_fallback_enabled);
+        assert_eq!(parsed.local_http_port, cfg.local_http_port);
+        Ok(())
+    }
 }

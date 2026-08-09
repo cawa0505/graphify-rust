@@ -463,6 +463,12 @@ mod tests {
                         distance: "Cosine".to_string(),
                         grpc: false,
                         indexing_threshold: 20000,
+                        local_fallback_enabled: false,
+                        local_bin_dir: std::path::PathBuf::new(),
+                        local_storage_dir: std::path::PathBuf::new(),
+                        local_version: String::new(),
+                        local_http_port: 16_333,
+                        local_grpc_port: 16_334,
                     },
                     index_kinds: vec![
                         "module".to_string(),

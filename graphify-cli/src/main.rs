@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_if)]
 
 pub mod plugin_host;
+pub mod rehydrate;
 pub mod skill;
 pub mod snapshot;
 pub mod tui;

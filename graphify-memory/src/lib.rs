@@ -10,6 +10,7 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 
 pub mod config;
+pub mod local_process;
 pub mod memory;
 pub mod plugin_memory;
 
@@ -18,5 +19,6 @@ pub use config::{
 };
 pub use memory::{
     MemoryNode, MemoryQueryInput, MemoryQueryResult, MemorySearcher, QdrantMemoryStore,
+    StorageMode,
 };
 pub use plugin_memory::{PluginDomainMemory, plugin_collection_name};

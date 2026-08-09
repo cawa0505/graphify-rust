@@ -1,5 +1,6 @@
 use crate::config::LongTermMemoryConfig;
-use anyhow::{Result, anyhow};
+use crate::local_process::{DEFAULT_TARGET, QdrantLocalProcess};
+use anyhow::{Context as _, Result, anyhow};
 use fastembed::{Bgem3Embedding, Bgem3InitOptions, Bgem3Model};
 use reqwest::Client;
 use serde::Serialize;
@@ -150,9 +151,49 @@ pub trait MemorySearcher: Send + Sync {
     }
 }
 
+/// Active storage backend of a [`QdrantMemoryStore`] (RFC-0004 §1.3 dual-track).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageMode {
+    /// Connected to the configured external server.
+    ServerUrl(String),
+    /// Serving from the managed local standalone process.
+    LocalProcess,
+}
+
+/// Decides the active storage mode from a (possibly injected) health probe
+/// result — pure decision, unit-testable with fake health (tasks 3.6).
+/// Fallback disabled: always the server URL; a dead server surfaces as
+/// `Unavailable` at query time (existing semantics), never a hard failure.
+fn choose_mode(server_healthy: bool, fallback_enabled: bool) -> StorageMode {
+    if server_healthy || !fallback_enabled {
+        StorageMode::ServerUrl(String::new())
+    } else {
+        StorageMode::LocalProcess
+    }
+}
+
+/// Probes the configured server's `/healthz` with a bounded 10ms timeout
+/// (tasks 3.2). A healthy answer means "use the server"; any failure —
+/// timeout, connection refused, non-200 — means "fall back to local".
+async fn server_healthy(url: &str) -> bool {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(10))
+        .build()
+        .unwrap_or_default();
+    let healthz = format!("{}/healthz", url.trim_end_matches('/'));
+    client
+        .get(healthz)
+        .send()
+        .await
+        .is_ok_and(|resp| resp.status().is_success())
+}
+
 pub struct QdrantMemoryStore {
     config: LongTermMemoryConfig,
     embedding_concurrency: Option<usize>,
+    storage_mode: StorageMode,
+    // Kept alive for the store's lifetime: dropping the handle kills the child.
+    local_process: Option<QdrantLocalProcess>,
     client: Client,
     grpc_client: Option<qdrant_client::Qdrant>,
     // ponytail: Arc + Mutex allows safe sharing and on-demand initialization across tokio threads
@@ -161,13 +202,21 @@ pub struct QdrantMemoryStore {
 
 impl QdrantMemoryStore {
     pub fn new(config: LongTermMemoryConfig, embedding_concurrency: Option<usize>) -> Self {
+        let server_url = config.qdrant.url.clone();
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let grpc_client = if config.qdrant.grpc {
             let mut url = config.qdrant.url.clone();
-            if url.contains(":6333") {
+            if config.qdrant.local_fallback_enabled
+                && url.contains(&format!(":{}", config.qdrant.local_http_port))
+            {
+                url = url.replace(
+                    &format!(":{}", config.qdrant.local_http_port),
+                    &format!(":{}", config.qdrant.local_grpc_port),
+                );
+            } else if url.contains(":6333") {
                 url = url.replace(":6333", ":6334");
             }
             let mut builder = qdrant_client::Qdrant::from_url(&url);
@@ -181,10 +230,76 @@ impl QdrantMemoryStore {
         Self {
             config,
             embedding_concurrency,
+            storage_mode: StorageMode::ServerUrl(server_url),
+            local_process: None,
             client,
             grpc_client,
             fastembed_model: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Dual-track construction (RFC-0004 §1.3): probe the configured server;
+    /// use it when healthy, otherwise spawn the managed local process when
+    /// fallback is enabled. Construction never hard-fails on server
+    /// unavailability — with fallback off it degrades to the existing
+    /// `Unavailable` semantics, with fallback on it serves from local.
+    pub async fn init_with_fallback(
+        config: LongTermMemoryConfig,
+        embedding_concurrency: Option<usize>,
+    ) -> Result<Self> {
+        let healthy = server_healthy(&config.qdrant.url).await;
+        match choose_mode(healthy, config.qdrant.local_fallback_enabled) {
+            StorageMode::ServerUrl(_) => Ok(Self::new(config, embedding_concurrency)),
+            StorageMode::LocalProcess => Self::spawn_local_store(config, embedding_concurrency).await,
+        }
+    }
+
+    /// Spawns (downloading first if needed) the managed local Qdrant process
+    /// and points a fresh store at it.
+    async fn spawn_local_store(
+        config: LongTermMemoryConfig,
+        embedding_concurrency: Option<usize>,
+    ) -> Result<Self> {
+        // Fall back: ensure the binary, spawn the process, point the store at it.
+        let bin_dir = QdrantLocalProcess::resolve_path(&config.qdrant.local_bin_dir);
+        let storage_dir = QdrantLocalProcess::resolve_path(&config.qdrant.local_storage_dir);
+        std::fs::create_dir_all(&bin_dir).context("creating qdrant bin dir")?;
+        std::fs::create_dir_all(&storage_dir).context("creating qdrant storage dir")?;
+
+        let bin_path = bin_dir.join("qdrant");
+        if !bin_path.exists() {
+            let client = Client::builder()
+                .timeout(Duration::from_mins(1))                .build()
+                .unwrap_or_default();
+            QdrantLocalProcess::download_binary(
+                &client,
+                &config.qdrant.local_version,
+                DEFAULT_TARGET,
+                &bin_dir,
+            )
+            .await?;
+        }
+
+        let process = QdrantLocalProcess::spawn(
+            &bin_path,
+            &storage_dir,
+            config.qdrant.local_http_port,
+            config.qdrant.local_grpc_port,
+        )?;
+
+        let mut local_config = config.clone();
+        local_config.qdrant.url = format!("http://127.0.0.1:{}", config.qdrant.local_http_port);
+        local_config.qdrant.grpc = true;
+
+        let mut store = Self::new(local_config, embedding_concurrency);
+        store.storage_mode = StorageMode::LocalProcess;
+        store.local_process = Some(process);
+        Ok(store)
+    }
+
+    /// Active storage mode, exposed read-only for diagnostics (TUI status line).
+    pub fn storage_mode(&self) -> &StorageMode {
+        &self.storage_mode
     }
 
     fn get_or_init_fastembed(
@@ -1067,6 +1182,7 @@ fn json_to_condition(val: &Value) -> Option<qdrant_client::qdrant::Condition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
     /// Records search invocations for verifying scoping and limit propagation.
@@ -1128,6 +1244,10 @@ mod tests {
             query: "how does memory work".to_string(),
             limit,
         }
+    }
+
+    fn lt_config() -> LongTermMemoryConfig {
+        LongTermMemoryConfig::default()
     }
 
     #[tokio::test]
@@ -1222,6 +1342,69 @@ mod tests {
         assert!(
             matches!(result, MemoryQueryResult::Unavailable(msg) if msg.contains("provider down"))
         );
+        Ok(())
+    }
+
+    // ── Task 3: init_with_fallback dual-track (RFC-0004 §1.3) ──────────────
+
+    #[test]
+    fn test_choose_mode_healthy_prefers_server() {
+        assert!(matches!(choose_mode(true, true), StorageMode::ServerUrl(_)));
+        assert!(matches!(choose_mode(true, false), StorageMode::ServerUrl(_)));
+    }
+
+    #[test]
+    fn test_choose_mode_dead_server_with_fallback_goes_local() {
+        assert!(matches!(
+            choose_mode(false, true),
+            StorageMode::LocalProcess
+        ));
+    }
+
+    #[test]
+    fn test_choose_mode_dead_server_without_fallback_stays_server() {
+        // Fallback disabled: keep ServerUrl; unavailability surfaces at query
+        // time as MemoryQueryResult::Unavailable, never a hard failure.
+        assert!(matches!(
+            choose_mode(false, false),
+            StorageMode::ServerUrl(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_init_with_fallback_disabled_equals_new() -> Result<()> {
+        // local_fallback_enabled=false must construct identically to new():
+        // no probe, no process, ServerUrl mode.
+        let mut config = lt_config();
+        config.qdrant.local_fallback_enabled = false;
+        let store = QdrantMemoryStore::init_with_fallback(config, None).await?;
+        assert!(matches!(store.storage_mode(), StorageMode::ServerUrl(_)));
+        assert!(store.local_process.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_server_healthy_probe_accepts_healthz() -> Result<()> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nOK");
+            }
+        });
+        let url = format!("http://{addr}");
+        assert!(server_healthy(&url).await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_server_healthy_probe_rejects_dead_port() -> Result<()> {
+        // Bind then drop — nothing listens on that port.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        let url = format!("http://{addr}");
+        assert!(!server_healthy(&url).await);
         Ok(())
     }
 }

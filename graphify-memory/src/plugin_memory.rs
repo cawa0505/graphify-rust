@@ -140,6 +140,33 @@ impl PluginDomainMemory {
             .collect())
     }
 
+    /// Returns records written after `since` (exclusive) — the offline WAL
+    /// delta for rehydration (RFC-0004 §1.3.1). Workspace isolation is
+    /// enforced by reading only that workspace's file; no limit is applied
+    /// because rehydration drains the full pending backlog.
+    pub fn pending_records_since<T: DeserializeOwned>(
+        &self,
+        plugin_id: &str,
+        workspace_key: &str,
+        since: i64,
+    ) -> Result<Vec<PluginMemoryEnvelope<T>>> {
+        let collection = plugin_collection_name(plugin_id)?;
+        if workspace_key.is_empty() {
+            bail!("workspace_key must not be empty");
+        }
+        let file_path = self.file_path(&collection, workspace_key);
+        let Ok(f) = fs::File::open(&file_path) else {
+            return Ok(Vec::new());
+        };
+        Ok(BufReader::new(f)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str::<PluginMemoryEnvelope<T>>(&line).ok())
+            .filter(|r| r.workspace_key == workspace_key)
+            .filter(|r| r.created_at > since)
+            .collect())
+    }
+
     fn file_path(&self, collection: &str, workspace_key: &str) -> PathBuf {
         self.base_dir
             .join(collection)
@@ -186,6 +213,82 @@ mod tests {
     fn temp_store() -> anyhow::Result<(PluginDomainMemory, tempfile::TempDir)> {
         let dir = tempfile::tempdir()?;
         Ok((PluginDomainMemory::new(dir.path()), dir))
+    }
+
+    #[test]
+    fn test_pending_records_since_filters_created_at() -> Result<()> {
+        let (store, _d) = temp_store()?;
+        let base = envelope("opendoc", "ws-a", "r1", "OpenDoc");
+
+        let old = {
+            let mut e = base.clone();
+            e.record_id = "r-old".into();
+            e.created_at = 1_700_000_000;
+            e
+        };
+        let mid = {
+            let mut e = base.clone();
+            e.record_id = "r-mid".into();
+            e.created_at = 1_750_000_000;
+            e
+        };
+        let new = {
+            let mut e = base;
+            e.record_id = "r-new".into();
+            e.created_at = 1_800_000_000;
+            e
+        };
+        store.put_record(&old)?;
+        store.put_record(&mid)?;
+        store.put_record(&new)?;
+
+        // since=1_700_000_000 (exclusive) → mid + new only.
+        let pending: Vec<PluginMemoryEnvelope<OpenDocPayload>> =
+            store.pending_records_since("opendoc", "ws-a", 1_700_000_000)?;
+        let mut ids: Vec<_> = pending.iter().map(|e| e.record_id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["r-mid", "r-new"]);
+
+        // since beyond newest → empty.
+        assert!(
+            store
+                .pending_records_since::<OpenDocPayload>("opendoc", "ws-a", 1_800_000_000)?
+                .is_empty()
+        );
+
+        // No file yet → empty, no error.
+        assert!(
+            store
+                .pending_records_since::<OpenDocPayload>("opendoc", "ws-unknown", 0)?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_pending_records_since_isolates_workspace_and_plugin() -> Result<()> {
+        let (store, _d) = temp_store()?;
+        store.put_record(&envelope("opendoc", "ws-a", "r1", "OpenDoc"))?;
+        store.put_record(&envelope("opendoc", "ws-b", "r2", "OpenDoc"))?;
+        store.put_record(&envelope("other", "ws-a", "r3", "Review"))?;
+
+        let ws_a: Vec<PluginMemoryEnvelope<OpenDocPayload>> =
+            store.pending_records_since("opendoc", "ws-a", 0)?;
+        assert_eq!(ws_a.len(), 1);
+        assert_eq!(ws_a[0].record_id, "r1");
+
+        // Different workspace file exists → its records are not visible here.
+        let ws_b: Vec<PluginMemoryEnvelope<OpenDocPayload>> =
+            store.pending_records_since("opendoc", "ws-b", 0)?;
+        assert_eq!(ws_b.len(), 1);
+        assert_eq!(ws_b[0].record_id, "r2");
+
+        // Different plugin never sees ws-a records under its own collection.
+        let other: Vec<PluginMemoryEnvelope<OpenDocPayload>> =
+            store.pending_records_since("other", "ws-a", 0)?;
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].record_id, "r3");
+        Ok(())
     }
 
     #[test]
