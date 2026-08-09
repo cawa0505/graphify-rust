@@ -16,6 +16,10 @@ graphify-registry = { path = "../graphify-registry" }
 graphify-plugin-handoff = { path = "../../GraphifyPlugins/graphify-plugin-handoff" }
 # 第一方內嵌 plugin：opendoc* 檔案↔程式碼追蹤工具
 graphify-plugin-opendoc = { path = "../../GraphifyPlugins/graphify-plugin-opendoc" }
+# 第一方內嵌 plugin：review* code-review-graph 橋接工具
+graphify-plugin-review = { path = "../../GraphifyPlugins/graphify-plugin-review" }
+# 第一方內嵌 plugin：telemetry* Draco Telemetry 橋接工具
+graphify-plugin-telemetry = { path = "../../GraphifyPlugins/graphify-plugin-telemetry" }
 
 # Async / IO
 tokio = { version = "1.0", features = ["full"] }

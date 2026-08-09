@@ -977,6 +977,7 @@ dependencies = [
  "graphify-memory",
  "graphify-plugin-handoff",
  "graphify-plugin-opendoc",
+ "graphify-plugin-review",
  "graphify-registry",
  "qdrant-client",
  "ratatui",
@@ -1038,6 +1039,8 @@ dependencies = [
  "graphify-memory",
  "graphify-plugin-handoff",
  "graphify-plugin-opendoc",
+ "graphify-plugin-review",
+ "graphify-plugin-telemetry",
  "graphify-registry",
  "petgraph",
  "serde",
@@ -1094,6 +1097,32 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "thiserror 1.0.69",
+ "ureq 2.12.1",
+]
+
+[[package]]
+name = "graphify-plugin-review"
+version = "0.1.0"
+dependencies = [
+ "graphify-core",
+ "graphify-registry",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ureq 2.12.1",
+]
+
+[[package]]
+name = "graphify-plugin-telemetry"
+version = "0.1.0"
+dependencies = [
+ "graphify-core",
+ "graphify-registry",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "ureq 2.12.1",
 ]

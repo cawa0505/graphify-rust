@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use graphify_core::{
     ExtractionResult, GraphMetadata, GraphOutput, GraphUpdateEvent, GraphUpdateKind, Node, NodeId,
-    build_graph, derive_workspace_key, extract_file, find_shortest_path, query_bfs,
+    GraphifyPlugin, build_graph, derive_workspace_key, extract_file, find_shortest_path, query_bfs,
 };
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
@@ -116,6 +116,11 @@ enum Commands {
     Opendoc {
         #[command(subcommand)]
         command: OpendocCommand,
+    },
+    /// code-review-graph 橋接（內嵌 graphify-plugin-review）
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
     },
 }
 
@@ -269,6 +274,28 @@ pub enum OpendocCommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum ReviewCommand {
+    /// 從 CRG `IngestPayload` JSON 檔案匯入 review 點位（line→symbol 升維綁定）
+    Ingest {
+        /// `IngestPayload` JSON 檔案路徑
+        payload: PathBuf,
+    },
+    /// 查詢某 canonical node id 關聯的未解決 review
+    GetContext {
+        /// canonical node id（如 `src/auth.rs:function:verify_token`，由 ingest 時綁定）
+        node: String,
+    },
+    /// 手動標記一筆 review 為已解決
+    Resolve {
+        /// review id（`IngestPayload` 中的 `review_id`）
+        review_id: String,
+        /// 解決原因（記錄用）
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -305,6 +332,7 @@ fn main() -> Result<()> {
         },
         Commands::Handoff { command } => run_handoff(command)?,
         Commands::Opendoc { command } => run_opendoc(command)?,
+        Commands::Review { command } => run_review(command)?,
     }
     Ok(())
 }
@@ -919,6 +947,86 @@ fn run_opendoc(command: OpendocCommand) -> Result<()> {
         OpendocCommand::Skill { command } => {
             let out = opendoc_run_skill_command(command)?;
             println!("{out}");
+        }
+    }
+    Ok(())
+}
+
+/// `graphify review` — code-review-graph 橋接（內嵌 graphify-plugin-review）。
+///
+/// 比照 `handoff`/`opendoc` 整合模式：cwd 合成 `WorkspaceContext`、全域
+/// graphify.db 路徑注入。
+fn build_review_for_cli() -> Result<graphify_plugin_review::ReviewPlugin> {
+    let cwd = std::env::current_dir()?;
+    let plugin = graphify_plugin_review::ReviewPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path());
+    Ok(plugin.bind_for_cli(&cwd))
+}
+
+/// `graphify review` — code-review-graph 橋接（內嵌 graphify-plugin-review）。
+fn run_review(command: ReviewCommand) -> Result<()> {
+    let mut plugin = build_review_for_cli()?;
+    let key = plugin.get_workspace_key().to_string();
+    let cwd = std::env::current_dir().context("cwd")?;
+    match command {
+        ReviewCommand::Ingest { payload } => {
+            // 載入既有 `graphify-out/graph.toon` 快取以供 line→symbol 解析；
+            // 無快取時 ingest 仍會執行，但所有 review 會回報為 orphan。
+            let toon_path = cwd.join("graphify-out/graph.toon");
+            if toon_path.exists() {
+                match load_graph_output(&toon_path) {
+                    Ok(g) => {
+                        let s = graphify_core::to_toon(&g);
+                        plugin.sync_toon(Some(s.into_bytes()));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[review] warning: cached graph unreadable ({e}); \
+                             ingest 將所有行視為 orphan"
+                        );
+                    }
+                }
+            } else {
+                eprintln!(
+                    "[review] note: 無快取 graphify-out/graph.toon；先跑 `graphify graph` \
+                     再 ingest 才能做 line→symbol 綁定"
+                );
+            }
+            let (bound, orphan) = plugin
+                .review_ingest_file(&payload)
+                .map_err(|e| anyhow!("review ingest: {e}"))?;
+            println!(
+                "[review] {}: {bound} bound, {orphan} orphan lines",
+                payload.display()
+            );
+        }
+        ReviewCommand::GetContext { node } => {
+            let (node_id, rows) = plugin
+                .review_get_context(&key, &node, false)
+                .map_err(|e| anyhow!("review get_context: {e}"))?;
+            if rows.is_empty() {
+                println!("[review] {node_id}: no unresolved reviews");
+            } else {
+                for r in &rows {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        r.id, r.severity, r.category, r.comment
+                    );
+                }
+            }
+        }
+        ReviewCommand::Resolve { review_id, reason } => {
+            let updated = plugin
+                .review_resolve(&key, &review_id)
+                .map_err(|e| anyhow!("review resolve: {e}"))?;
+            if updated {
+                match reason {
+                    Some(r) => println!("[review] {review_id}: resolved ({r})"),
+                    None => println!("[review] {review_id}: resolved"),
+                }
+            } else {
+                println!("[review] {review_id}: not found");
+            }
         }
     }
     Ok(())

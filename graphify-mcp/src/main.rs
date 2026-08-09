@@ -14,11 +14,14 @@ use graphify_core::extract::extract_file;
 use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
 use graphify_core::graph::query::query_bfs;
+use graphify_core::plugin::GraphifyPlugin;
 use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use graphify_llm::config::PluginsConfig;
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
+use graphify_plugin_review::ReviewPlugin;
+use graphify_plugin_telemetry::TelemetryPlugin;
 use memory_query::MemoryQueryService;
 use petgraph::graph::{DiGraph, NodeIndex};
 use plugin_host::host::PluginHost;
@@ -167,6 +170,12 @@ fn main() -> Result<()> {
     // Embedded opendoc plugin: same bind-once / global-registry pattern as
     // relay; opendoc* tools degrade to empty results when Layer 2 is absent.
     let opendoc = Rc::new(RefCell::new(build_opendoc_plugin()));
+    // Embedded review plugin: code-review-graph bridge (file-based ingest,
+    // line→symbol binding in graphify.db); review* tools are self-contained.
+    let review = Rc::new(RefCell::new(build_review_plugin()));
+    // Embedded telemetry plugin: Draco Telemetry bridge (file-based ingest,
+    // hotspot threshold in graphify.db); telemetry* tools are self-contained.
+    let telemetry = Rc::new(RefCell::new(build_telemetry_plugin()));
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -190,6 +199,8 @@ fn main() -> Result<()> {
                     Rc::clone(&memory_query),
                     Rc::clone(&relay),
                     Rc::clone(&opendoc),
+                    Rc::clone(&review),
+                    Rc::clone(&telemetry),
                 );
                 if is_notification {
                     continue;
@@ -236,6 +247,22 @@ fn build_opendoc_plugin() -> OpendocPlugin {
     p.bind_for_cli(&cwd)
 }
 
+fn build_review_plugin() -> ReviewPlugin {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let p = ReviewPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    // Slice 1/2：CRG_MCP_URL 設定時注入即時分析 client（目前保留骨架）。
+    p.bind_for_cli(&cwd)
+}
+
+/// Build the embedded telemetry plugin: same global-registry pattern as
+/// review (telemetry_bindings 在 graphify.db)。Slice 1 起 `DRACO_BASE_URL`
+/// 設定時由 `draco_client` 主動輪詢 Draco MCP；Slice 0 只走檔案型 ingest。
+fn build_telemetry_plugin() -> TelemetryPlugin {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let p = TelemetryPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    p.bind_for_cli(&cwd)
+}
+
 fn handle_request(
     request: JsonRpcRequest,
     state_lock: Arc<RwLock<GraphState>>,
@@ -243,6 +270,8 @@ fn handle_request(
     memory_query: Rc<RefCell<MemoryQueryService>>,
     relay: Rc<RefCell<RelayPlugin>>,
     opendoc: Rc<RefCell<OpendocPlugin>>,
+    review: Rc<RefCell<ReviewPlugin>>,
+    telemetry: Rc<RefCell<TelemetryPlugin>>,
 ) -> JsonRpcResponse {
     let method = request.method.as_str();
     match method {
@@ -473,6 +502,63 @@ fn handle_request(
                         "properties": {},
                         "required": []
                     }
+                },
+                {
+                    "name": "reviewIngest",
+                    "description": "Import a CRG IngestPayload JSON file into the review_bindings registry: each review point is line→symbol resolved against the cached GraphOutput (Slice 0 file-based import, no CRG dependency)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "payload": { "type": "string", "description": "Path to the IngestPayload JSON file" }
+                        },
+                        "required": ["payload"]
+                    }
+                },
+                {
+                    "name": "reviewGetContext",
+                    "description": "Query unresolved reviews bound to a canonical node id (e.g. `src/auth.rs:function:verify_token`)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "node": { "type": "string", "description": "canonical node id (assigned at ingest time)" }
+                        },
+                        "required": ["node"]
+                    }
+                },
+                {
+                    "name": "reviewResolve",
+                    "description": "Mark a review as resolved by its review id",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "review_id": { "type": "string" }
+                        },
+                        "required": ["review_id"]
+                    }
+                },
+                {
+                    "name": "telemetryIngest",
+                    "description": "Import a telemetry IngestPayload JSON file into the telemetry_bindings registry: each metric is line→symbol resolved against the cached GraphOutput and flagged is_hotspot when p99 > 1000ms or alloc > 5MB (Slice 0 file-based import; source=\"draco-mcp\" 於 Slice 1 由 draco_client 主動輪詢)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "source": { "type": "string", "description": "\"file\" (Slice 0) 或 \"draco-mcp\" (Slice 1)" },
+                            "path_or_draco_params": { "type": "string", "description": "source=\"file\" 時為 IngestPayload JSON 檔路徑" }
+                        },
+                        "required": ["source", "path_or_draco_params"]
+                    }
+                },
+                {
+                    "name": "telemetryGetContext",
+                    "description": "Query telemetry bindings for a canonical node id (e.g. `src/db/query.rs:function:query_users`): p99 latency / alloc / call rate / hotspot flag; include_impact_radius 於 Slice 2 展開 Upstream callers BFS",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "node": { "type": "string", "description": "canonical node id" },
+                            "include_impact_radius": { "type": "boolean", "description": "Slice 2: 含 Upstream callers 衝擊半徑" }
+                        },
+                        "required": ["node"]
+                    }
                 }
             ]);
             // A poisoned plugin lock must not hide the built-in tools;
@@ -621,6 +707,104 @@ fn handle_request(
                         error: Some(JsonRpcError {
                             code: -32603,
                             message: format!("Opendoc tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            // Embedded review tools: code-review-graph bridge — file-based
+            // ingest resolves line→symbol against the cached GraphOutput
+            // (sync_toon must have run first); queries return bindings in
+            // graphify.db. Slice 0 is self-contained (no CRG HTTP dependency).
+            //
+            // Host responsibility (reviewIngest)：將已索引的 GraphOutput
+            // 經由 sync_toon 傳入 plugin 記憶體快取，再做 line→symbol
+            // 解析；保證 line 升維至 canonical NodeId 時有圖譜可對齊。
+            if matches!(tool_name, "reviewIngest" | "reviewGetContext" | "reviewResolve") {
+                if tool_name == "reviewIngest" {
+                    let state = match state_lock.read() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: request.id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32603,
+                                    message: "graph state lock poisoned".to_string(),
+                                }),
+                            };
+                        }
+                    };
+                    let toon_str = graphify_core::to_toon(&state.graph_data);
+                    drop(state);
+                    review.borrow_mut().sync_toon(Some(toon_str.into_bytes()));
+                }
+                let review = review.borrow();
+                return match run_review_tool(tool_name, &tool_arguments, &review) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Review tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            // Embedded telemetry tools: Draco Telemetry bridge — same
+            // host-responsibility pattern as reviewIngest：telemetryIngest
+            // 前先經由 sync_toon 餵入已索引的 GraphOutput，line→symbol
+            // 升維時才有圖譜可對齊。Slice 0 只支援 source="file"。
+            if matches!(tool_name, "telemetryIngest" | "telemetryGetContext") {
+                if tool_name == "telemetryIngest" {
+                    let state = match state_lock.read() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: request.id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32603,
+                                    message: "graph state lock poisoned".to_string(),
+                                }),
+                            };
+                        }
+                    };
+                    let toon_str = graphify_core::to_toon(&state.graph_data);
+                    drop(state);
+                    telemetry
+                        .borrow_mut()
+                        .sync_toon(Some(toon_str.into_bytes()));
+                }
+                let telemetry = telemetry.borrow();
+                return match run_telemetry_tool(tool_name, &tool_arguments, &telemetry) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Telemetry tool error: {e}"),
                         }),
                     },
                 };
@@ -807,6 +991,120 @@ fn run_opendoc_tool(
             }
         }
         _ => anyhow::bail!("Unsupported opendoc tool: {name}"),
+    }
+}
+
+/// Dispatch one `review*` tool to the embedded review plugin. The host must
+/// have fed the current `GraphOutput` into the plugin via `sync_toon` before
+/// calling ingest (line→symbol resolution requires a cached graph).
+fn run_review_tool(
+    name: &str,
+    args: &serde_json::Value,
+    review: &ReviewPlugin,
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let wk = review.get_workspace_key().to_string();
+    match name {
+        "reviewIngest" => {
+            let path = get_str("payload").ok_or_else(|| anyhow!("Missing 'payload'"))?;
+            let (bound, orphan) = review
+                .review_ingest_file(Path::new(path))
+                .map_err(|e| anyhow!("review ingest_file: {e}"))?;
+            Ok(format!("[review] {path}: {bound} bound, {orphan} orphan lines"))
+        }
+        "reviewGetContext" => {
+            let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
+            let (_node_id, rows) = review
+                .review_get_context(&wk, node, false)
+                .map_err(|e| anyhow!("review get_context: {e}"))?;
+            if rows.is_empty() {
+                Ok(format!("[review] {node}: no unresolved reviews"))
+            } else {
+                let mut out =
+                    format!("[review] {node} — {} unresolved review(s):\n", rows.len());
+                for r in &rows {
+                    let _ = writeln!(
+                        out,
+                        "  {}\t{}\t{}\t{}",
+                        r.id, r.severity, r.category, r.comment
+                    );
+                }
+                Ok(out)
+            }
+        }
+        "reviewResolve" => {
+            let rid = get_str("review_id").ok_or_else(|| anyhow!("Missing 'review_id'"))?;
+            let updated = review
+                .review_resolve(&wk, rid)
+                .map_err(|e| anyhow!("review resolve: {e}"))?;
+            if updated {
+                Ok(format!("[review] {rid}: resolved"))
+            } else {
+                Ok(format!("[review] {rid}: not found"))
+            }
+        }
+        _ => anyhow::bail!("Unsupported review tool: {name}"),
+    }
+}
+
+/// Dispatch one `telemetry*` tool to the embedded telemetry plugin.
+/// Returns a text result; errors are mapped to JSON-RPC error responses.
+fn run_telemetry_tool(
+    name: &str,
+    args: &serde_json::Value,
+    telemetry: &TelemetryPlugin,
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let wk = telemetry.get_workspace_key().to_string();
+    match name {
+        "telemetryIngest" => {
+            let source = get_str("source").ok_or_else(|| anyhow!("Missing 'source'"))?;
+            let path = get_str("path_or_draco_params")
+                .ok_or_else(|| anyhow!("Missing 'path_or_draco_params'"))?;
+            if source != "file" {
+                anyhow::bail!(
+                    "source={source} not supported in Slice 0 — use \"file\" (draco-mcp 輪詢於 Slice 1)"
+                );
+            }
+            let report = telemetry
+                .telemetry_ingest_file(Path::new(path))
+                .map_err(|e| anyhow!("telemetry ingest_file: {e}"))?;
+            Ok(format!(
+                "[telemetry] {path}: {} metrics, {} bound, {} orphan, {} hotspot(s)",
+                report.total, report.bound, report.orphan, report.hotspots
+            ))
+        }
+        "telemetryGetContext" => {
+            let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
+            let include_radius = args
+                .get("include_impact_radius")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let (_node_id, rows) = telemetry
+                .telemetry_get_context(&wk, node, include_radius)
+                .map_err(|e| anyhow!("telemetry get_context: {e}"))?;
+            if rows.is_empty() {
+                Ok(format!("[telemetry] {node}: no telemetry bindings"))
+            } else {
+                let mut out = format!("[telemetry] {node} — {} binding(s):\n", rows.len());
+                for b in &rows {
+                    let hotspot = if b.is_hotspot { " 🔥" } else { "" };
+                    let _ = writeln!(
+                        out,
+                        "  {}\tp99: {:.1}ms\talloc: {:.1}MB\tcalls/min: {}{}",
+                        b.id,
+                        b.p99_ms,
+                        b.alloc_bytes as f64 / 1048576.0,
+                        b.call_count,
+                        hotspot
+                    );
+                }
+                Ok(out)
+            }
+        }
+        _ => anyhow::bail!("Unsupported telemetry tool: {name}"),
     }
 }
 
