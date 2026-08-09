@@ -262,6 +262,11 @@ pub enum OpendocCommand {
     },
     /// 顯示已設定的 `od_workspace_id`
     GetMapping,
+    /// 安裝/移除雙軌 agent skill（MCP + CLI 備援）
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
 }
 
 fn main() -> Result<()> {
@@ -896,6 +901,10 @@ fn run_opendoc(command: OpendocCommand) -> Result<()> {
                 None => println!("[opendoc] no workspace mapping set"),
             }
         }
+        OpendocCommand::Skill { command } => {
+            let out = opendoc_run_skill_command(command)?;
+            println!("{out}");
+        }
     }
     Ok(())
 }
@@ -954,6 +963,67 @@ fn run_skill_command(command: SkillCommand) -> Result<String> {
             }
             for (path, why) in &report.skipped {
                 lines.push(format!("skipped: {} — {why}", path.display()));
+            }
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+/// `graphify opendoc skill` — 安裝/移除雙軌 SKILL.md（opendoc 版，輸出帶
+/// `[opendoc]` 前綴）。
+fn opendoc_run_skill_command(command: SkillCommand) -> Result<String> {
+    use graphify_plugin_opendoc::skill_install::{self, Agent, Scope};
+
+    let resolve_agents = |explicit: &Option<String>| -> Result<Vec<Agent>> {
+        if let Some(list) = explicit {
+            list.split(',')
+                .map(|s| Agent::parse(s.trim()).ok_or_else(|| anyhow!("unknown agent: {s}")))
+                .collect()
+        } else {
+            let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("$HOME is not set"))?;
+            let cwd = std::env::current_dir()?;
+            let found = skill_install::detect_agents(Path::new(&home), &cwd);
+            if found.is_empty() {
+                return Err(anyhow!(
+                    "no known agent config found — pass --agent opencode|claude|cursor|cline"
+                ));
+            }
+            Ok(found)
+        }
+    };
+
+    let resolve_scopes = |explicit: &Option<String>| -> Result<Vec<Scope>> {
+        if let Some(s) = explicit {
+            let scope = Scope::parse(s).ok_or_else(|| anyhow!("unknown scope: {s}"))?;
+            Ok(vec![scope])
+        } else {
+            Ok(vec![Scope::User, Scope::Project])
+        }
+    };
+
+    let (agents_opt, scopes_opt, is_install) = match command {
+        SkillCommand::Install { agent, scope } => (agent, scope, true),
+        SkillCommand::Uninstall { agent, scope } => (agent, scope, false),
+    };
+
+    let agents = resolve_agents(&agents_opt)?;
+    let mut lines = Vec::new();
+    for scope in resolve_scopes(&scopes_opt)? {
+        if is_install {
+            let report = skill_install::install(&agents, scope)?;
+            for path in &report.installed {
+                lines.push(format!("[opendoc] installed: {}", path.display()));
+            }
+            for (path, why) in &report.skipped {
+                lines.push(format!("[opendoc] skipped: {} — {why}", path.display()));
+            }
+        } else {
+            let report = skill_install::uninstall(&agents, scope)?;
+            for path in &report.removed {
+                lines.push(format!("[opendoc] removed: {}", path.display()));
+            }
+            for (path, why) in &report.skipped {
+                lines.push(format!("[opendoc] skipped: {} — {why}", path.display()));
             }
         }
     }
