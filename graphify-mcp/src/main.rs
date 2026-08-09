@@ -16,6 +16,8 @@ use graphify_core::graph::path::find_shortest_path;
 use graphify_core::graph::query::query_bfs;
 use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use graphify_llm::config::PluginsConfig;
+use graphify_plugin_handoff::relay::SaveArgs;
+use graphify_plugin_handoff::RelayPlugin;
 use memory_query::MemoryQueryService;
 use petgraph::graph::{DiGraph, NodeIndex};
 use plugin_host::host::PluginHost;
@@ -157,6 +159,11 @@ fn main() -> Result<()> {
         }
     }));
 
+    // Embedded handoff relay plugin: bound once to the server cwd (root
+    // walk-up per PROTOCOL.md); relay* tools answer honestly with a NoRoot
+    // error when no relay.json exists, mirroring the legacy plugin behavior.
+    let relay = Rc::new(RefCell::new(build_relay_plugin()));
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -173,6 +180,7 @@ fn main() -> Result<()> {
                     Arc::clone(&state),
                     Rc::clone(&plugin_host),
                     Rc::clone(&memory_query),
+                    Rc::clone(&relay),
                 );
                 let response_json = serde_json::to_string(&response)?;
                 writeln!(stdout, "{response_json}")?;
@@ -187,11 +195,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Build the embedded handoff plugin: global registry DB injected so
+/// relayClose snapshots land in the same graphify.db as the rest of the
+/// toolchain (best-effort; a missing relay.json only affects relay* calls).
+fn build_relay_plugin() -> RelayPlugin {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut plugin = RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    plugin.bind_for_cli(&cwd);
+    plugin
+}
+
 fn handle_request(
     request: JsonRpcRequest,
     state_lock: Arc<RwLock<GraphState>>,
     plugin_host: Rc<RefCell<PluginHost>>,
     memory_query: Rc<RefCell<MemoryQueryService>>,
+    relay: Rc<RefCell<RelayPlugin>>,
 ) -> JsonRpcResponse {
     let method = request.method.as_str();
     match method {
@@ -301,6 +320,92 @@ fn handle_request(
                         },
                         "required": ["workspace_key", "query"]
                     }
+                },
+                {
+                    "name": "relayInit",
+                    "description": "Initialize a relay.json at the current workspace to start cross-session / cross-repo state handoff",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_context": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["backend", "frontend", "infra"] }
+                        },
+                        "required": ["project_context"]
+                    }
+                },
+                {
+                    "name": "relaySave",
+                    "description": "Save the current repo's volatile state, phase, confidence and next-step into relay.json and render RESUME.md",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "repo": { "type": "string" },
+                            "role": { "type": "string" },
+                            "phase": { "type": "string" },
+                            "volatile": { "type": "string" },
+                            "conf": { "type": "number" },
+                            "next": { "type": "string" },
+                            "debt": { "type": "string" },
+                            "kind": { "type": "string" }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "relayClose",
+                    "description": "Run the closing ritual: consistency check, spec diff, next_step.md, atomic commit, and a best-effort HandoffSnapshot into the registry",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "repo": { "type": "string" },
+                            "next": { "type": "string" }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "relaySwitch",
+                    "description": "Pass the baton to another registered repo and render its RESUME handover",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "repo": { "type": "string" },
+                            "kind": { "type": "string" }
+                        },
+                        "required": ["repo"]
+                    }
+                },
+                {
+                    "name": "relayResume",
+                    "description": "Render the RESUME handover for the active (or given) repo — used to bootstrap a new session",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "repo": { "type": "string" },
+                            "kind": { "type": "string" }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "relayStatus",
+                    "description": "Show relay summary: repos, active baton, spec drift, last update",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "relayAdd",
+                    "description": "Ingest an existing TODO/handoff doc from an old project into relay.json: stores the raw text and parses each non-empty line into open_threads",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "file": { "type": "string" },
+                            "repo": { "type": "string" }
+                        },
+                        "required": ["file"]
+                    }
                 }
             ]);
             // A poisoned plugin lock must not hide the built-in tools;
@@ -394,6 +499,33 @@ fn handle_request(
                 };
             }
 
+            // Embedded handoff relay tools: rendered text contract frozen by
+            // PROTOCOL.md, errors surface as tool errors (never a panic).
+            if matches!(
+                tool_name,
+                "relayInit" | "relaySave" | "relayClose" | "relaySwitch" | "relayResume"
+                    | "relayStatus" | "relayAdd"
+            ) {
+                let mut relay = relay.borrow_mut();
+                return match run_relay_tool(tool_name, &tool_arguments, &mut relay) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(val),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Relay tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
             // Route graphify_plugin_* tools to the plugin host before the
             // built-in tool matcher, so plugin tools can never shadow core tools.
             if tool_name.starts_with("graphify_plugin_") {
@@ -462,6 +594,46 @@ fn handle_request(
             }),
         },
     }
+}
+
+/// Dispatch one relay* tool to the embedded handoff plugin. Returns the
+/// frozen rendered text as a JSON string.
+fn run_relay_tool(
+    name: &str,
+    args: &serde_json::Value,
+    relay: &mut RelayPlugin,
+) -> Result<serde_json::Value> {
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let out = match name {
+        "relayInit" => {
+            let project = get_str("project_context")
+                .ok_or_else(|| anyhow!("Missing 'project_context'"))?;
+            relay.relay_init(project, get_str("kind"))?
+        }
+        "relaySave" => relay.relay_save(SaveArgs {
+            repo: get_str("repo"),
+            role: get_str("role"),
+            active_phase: get_str("phase"),
+            volatile_state: get_str("volatile"),
+            confidence: args.get("conf").and_then(|v| v.as_f64()),
+            next_session_starter: get_str("next"),
+            debt_tag: get_str("debt"),
+            kind: get_str("kind"),
+        })?,
+        "relayClose" => relay.relay_close(get_str("repo"), get_str("next"))?,
+        "relaySwitch" => {
+            let repo = get_str("repo").ok_or_else(|| anyhow!("Missing 'repo'"))?;
+            relay.relay_switch(repo, get_str("kind"))?
+        }
+        "relayResume" => relay.relay_resume(get_str("repo"), get_str("kind"))?,
+        "relayStatus" => relay.relay_status()?,
+        "relayAdd" => {
+            let file = get_str("file").ok_or_else(|| anyhow!("Missing 'file'"))?;
+            relay.relay_add(Path::new(file), get_str("repo"))?
+        }
+        _ => anyhow::bail!("Unsupported relay tool: {name}"),
+    };
+    Ok(serde_json::Value::String(out))
 }
 
 fn handle_tool_call(
@@ -659,6 +831,60 @@ mod tests {
         assert_eq!(empty.graph_data.nodes.len(), 0);
         assert_eq!(empty.graph_data.edges.len(), 0);
         assert!(find_node_by_id_or_label(&empty.graph_data, &NodeId("x".into())).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_relay_tools_full_cycle() -> Result<()> {
+        // Full relay lifecycle through the MCP dispatch: init -> save ->
+        // status -> close. Registry path is injected to a temp file so the
+        // close snapshot stays hermetic.
+        let dir = std::env::temp_dir().join(format!(
+            "graphify-mcp-relay-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)?;
+        let cwd = std::env::current_dir()?;
+        std::env::set_current_dir(&dir)?;
+
+        let mut plugin = RelayPlugin::new().with_registry_path(dir.join("graphify-test.db"));
+        plugin.bind_for_cli(&dir);
+        let empty_args = serde_json::json!({});
+
+        let init_out = run_relay_tool(
+            "relayInit",
+            &serde_json::json!({ "project_context": "test project" }),
+            &mut plugin,
+        )?;
+        assert!(init_out.as_str().is_some_and(|s| s.contains("Initialized relay at")));
+
+        let save_out = run_relay_tool(
+            "relaySave",
+            &serde_json::json!({
+                "repo": "graphify-mcp",
+                "phase": "testing",
+                "conf": 0.8,
+                "next": "run smoke test"
+            }),
+            &mut plugin,
+        )?;
+        assert!(save_out.as_str().is_some_and(|s| s.contains("graphify-mcp")));
+
+        let status_out = run_relay_tool("relayStatus", &empty_args, &mut plugin)?;
+        assert!(status_out.as_str().is_some_and(|s| s.contains("graphify-mcp")));
+
+        let close_out = run_relay_tool(
+            "relayClose",
+            &serde_json::json!({ "repo": "graphify-mcp", "next": "done" }),
+            &mut plugin,
+        )?;
+        assert!(close_out.as_str().is_some_and(|s| s.contains("Consistency: OK")));
+
+        // relayStatus after close must not error (baton was on graphify-mcp).
+        assert!(run_relay_tool("relayStatus", &empty_args, &mut plugin)?.as_str().is_some());
+
+        std::env::set_current_dir(cwd)?;
+        fs::remove_dir_all(&dir)?;
         Ok(())
     }
 }

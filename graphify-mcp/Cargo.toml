@@ -11,6 +11,9 @@ path = "src/main.rs"
 graphify-core = { path = "../graphify-core" }
 graphify-memory = { path = "../graphify-memory" }
 graphify-llm = { path = "../graphify-llm" }
+graphify-registry = { path = "../graphify-registry" }
+# 第一方內嵌 plugin：relay* 工具（GraphifyPlugins 群組，靜態連結）
+graphify-plugin-handoff = { path = "../../GraphifyPlugins/graphify-plugin-handoff" }
 
 # Async / IO
 tokio = { version = "1.0", features = ["full"] }

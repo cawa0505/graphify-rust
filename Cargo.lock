@@ -1026,6 +1026,8 @@ dependencies = [
  "graphify-core",
  "graphify-llm",
  "graphify-memory",
+ "graphify-plugin-handoff",
+ "graphify-registry",
  "petgraph",
  "serde",
  "serde_json",
