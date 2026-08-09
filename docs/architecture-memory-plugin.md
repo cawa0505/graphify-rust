@@ -248,13 +248,39 @@ Sequential; each phase requires verification before the next begins.
 | P1 | HandoffSnapshot 雙層補全（`MemoryQueryCriteria` 強型別 + snapshot 結構於 `graphify-core`，P2 registry 欄位對齊） | ✅ Done |
 | P2 | SQLite Global Registry（`graphify-registry`：workspaces / plugin_registrations / handoff_registry 三表、被動 resync、TTL+pruning、`graphify workspace` CLI、XDG 路徑） | ✅ Done |
 | P3 | TUI Stage 1（workspace switcher + 單列 status line，綁定 SQLite registry） | ⏳ Planned |
-| P4 | Qdrant Local fallback（init_with_fallback 雙軌 + 一鍵 rehydration，1.3.1） | ⏳ Planned |
+| P4 | Qdrant Local fallback（init_with_fallback 雙軌 + 一鍵 rehydration，1.3.1） | ✅ Done |
 | P5 | TUI Stage 2（Full Plugins & Memory console，health / domain memory / relay trace，依賴 P4 的雙軌狀態） | ⏳ Planned |
-| P6 | qdrant-grpc-incremental（deferred，P4 之後） | ⏳ Planned |
 | P7 | 三個 native plugins（GraphifyPlugins repo，本 repo 僅提供基礎建設與文件） | ⏳ Planned |
 
 P2 是 P3/P4 的共同前置：SQLite registry 同時支撐 workspace 綁定與
 rehydration 時間戳。P7 不在本 repo 實作範圍（見 §Phase 7 scope 界定）。
+
+### P4 雙軌與一鍵 Rehydration（已實作）
+
+RFC-0004 §1.3 原始構想使用 `Qdrant::from_path` 嵌入式 Local 模式，但該 API
+在 `qdrant-client` 0.11.1–1.19.0 任一版本皆不存在（見 `docs/ref/` 原條文，
+#3127 不改）。P4 以**受管 Qdrant standalone 程序**取代：
+
+- **`QdrantLocalProcess`**（`graphify-memory/src/local_process.rs`）：首次使用
+  下載官方 binary（GitHub Releases asset，SHA-256 驗證 `digest` 欄位，接受
+  `sha256:<hex>` 前綴），以 `QDRANT__` env 覆寫啟動（HTTP/GRPC port、
+  storage path、telemetry off），TCP readiness probe，Drop 時 SIGTERM graceful
+  shutdown（無 orphan process）。
+- **`init_with_fallback(lt_config, concurrency)`**（`memory.rs`）：10ms bounded
+  `/healthz` 探測外部 server → healthy 走 `StorageMode::ServerUrl`；不可達且
+  `local_fallback_enabled=true` → spawn Local process → `StorageMode::LocalProcess`；
+  `local_fallback_enabled=false`（預設）→ 維持 `new()` 等價行為（向後相容）。
+- **啟動邊界接線**（`graphify-cli/src/main.rs`）：`sync_to_qdrant` 改用
+  `init_with_fallback`；index 成功後 `rehydrate_plugin_memory` 以 10ms
+  `QdrantServerProbe`（包 `server_healthy`）探測外部 server，healthy 才跑
+  `check_and_resync`（`RehydrateJob`：JSONL WAL pending → server collection
+  idempotent upsert → `mark_synced`）；不可達即 `ProviderUnavailable`，非致命。
+- **`graphify-mcp` `MemoryQueryService`**：選擇性改用 `init_with_fallback`，
+  init 失敗 fallback `new()`（config 關閉時零行為變化）。
+
+E2E 驗證（2026-08-09）：ServerUrl 模式（連真 server 192.168.77.185:6333 →
+upsert + rehydrate Synced）+ Local fallback 模式（external 不可達 → 下載 binary
+→ spawn 16333 → Local index 成功 → rehydrate probe false → deferred）雙場景通過。
 
 ## References
 

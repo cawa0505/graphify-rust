@@ -20,6 +20,7 @@ use graphify_core::{
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "graphify", version = "0.1.0", about = "GraphifyRust CLI")]
@@ -726,8 +727,66 @@ fn run_index(
 
     println!("Successfully indexed codebase graph into Qdrant store!");
 
+    // Startup boundary: rehydrate plugin-memory WAL deltas to the external
+    // Qdrant server if it is reachable (P4 task 5.2). Never blocks indexing.
+    rehydrate_plugin_memory(&config, &derive_workspace_key(path))?;
+
     // Broadcast an `Indexed` graph-update event to all bound plugins.
     broadcast_indexed(path, &graph_out);
+    Ok(())
+}
+
+/// Startup-boundary rehydration (RFC-0004 §1.3.1, P4 task 5.2): probe the
+/// external Qdrant server once with a bounded ping; if healthy, push pending
+/// plugin-memory WAL deltas to the server collection and flip registrations
+/// `Ready`. A probe failure is non-fatal — plugin memory stays local and the
+/// CLI continues.
+fn rehydrate_plugin_memory(
+    config: &graphify_llm::config::LLMConfig,
+    workspace_key: &str,
+) -> Result<()> {
+    use graphify_registry::resync::{ProviderProbe, ResyncOutcome, check_and_resync};
+
+    /// Probes the external Qdrant server `/healthz` with the same bounded
+    /// 10ms semantics as `init_with_fallback`'s `server_healthy`.
+    struct QdrantServerProbe {
+        enabled: bool,
+        url: String,
+        rt: tokio::runtime::Runtime,
+    }
+    impl ProviderProbe for QdrantServerProbe {
+        fn is_available(&self) -> bool {
+            self.enabled && self.rt.block_on(graphify_memory::server_healthy(&self.url))
+        }
+    }
+
+    let probe = QdrantServerProbe {
+        enabled: config.memory.long_term.enabled,
+        url: config.memory.long_term.qdrant.url.clone(),
+        rt: tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?,
+    };
+    if !probe.is_available() {
+        println!(
+            "[graphify] Qdrant server unreachable; plugin memory stays local (rehydration deferred)."
+        );
+        return Ok(());
+    }
+
+    let db = workspace::open_registry()?;
+    let local_store = Arc::new(graphify_memory::plugin_memory::PluginDomainMemory::new(
+        graphify_memory::plugin_memory::PluginDomainMemory::default_dir(),
+    ));
+    let job = rehydrate::RehydrateJob::new(local_store, &config.memory.long_term.qdrant.url)?;
+    match check_and_resync(&db, &probe, &job, workspace_key)? {
+        ResyncOutcome::Synced => println!(
+            "[graphify] Rehydrated plugin memory deltas to Qdrant server (registrations Ready)."
+        ),
+        ResyncOutcome::ProviderUnavailable => println!(
+            "[graphify] Rehydration job failed; plugin memory stays local (retry next run)."
+        ),
+    }
     Ok(())
 }
 
@@ -745,10 +804,13 @@ fn sync_to_qdrant(
         "Connecting to Ollama and Qdrant to generate embeddings and index {} nodes...",
         graph_out.nodes.len()
     );
-    let store = graphify_memory::QdrantMemoryStore::new(
-        config.memory.long_term.clone(),
-        config.extraction.concurrency,
-    );
+    let store = rt.block_on(async {
+        graphify_memory::QdrantMemoryStore::init_with_fallback(
+            config.memory.long_term.clone(),
+            config.extraction.concurrency,
+        )
+        .await
+    })?;
     rt.block_on(async {
         if force {
             let _ = store.delete_collection().await;

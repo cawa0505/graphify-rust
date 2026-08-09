@@ -190,7 +190,13 @@ impl Drop for QdrantLocalProcess {
 pub fn verify_sha256(data: &[u8], expected: &str) -> Result<()> {
     use sha2::{Digest, Sha256};
     let actual = format!("{:x}", Sha256::digest(data));
-    if actual == expected.trim().to_lowercase() {
+    // GitHub Releases `digest` is `sha256:<hex>`; accept both prefixed and bare.
+    let trimmed = expected.trim();
+    let expected = trimmed
+        .strip_prefix("sha256:")
+        .unwrap_or(trimmed)
+        .to_lowercase();
+    if actual == expected {
         Ok(())
     } else {
         Err(anyhow!(
@@ -242,6 +248,8 @@ mod tests {
         let data = b"hello";
         let digest = format!("{:x}", Sha256::digest(data));
         assert!(verify_sha256(data, &digest).is_ok());
+        // GitHub Releases format: `sha256:<hex>` prefix must also be accepted.
+        assert!(verify_sha256(data, &format!("sha256:{digest}")).is_ok());
     }
 
     #[test]

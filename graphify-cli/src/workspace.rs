@@ -7,7 +7,7 @@ use graphify_registry::db::{RegistryDb, WorkspaceRow};
 use graphify_registry::registry_db_path;
 
 /// Open the global registry, creating the database if missing.
-fn open_registry() -> Result<RegistryDb> {
+pub(crate) fn open_registry() -> Result<RegistryDb> {
     let path = registry_db_path();
     RegistryDb::open(&path).with_context(|| format!("opening registry at {}", path.display()))
 }

@@ -34,13 +34,13 @@
 
 ## 5. 啟動邊界接線（graphify-cli）
 
-- [ ] 5.1 `sync_to_qdrant` 改用 `init_with_fallback`
-- [ ] 5.2 CLI 啟動邊界呼叫 `check_and_resync(db, probe, job, workspace_key)`（probe 包 10ms `is_available` 邊界，對齊 memory-resync spec）
-- [ ] 5.3 `graphify-mcp` `MemoryQueryService` 選擇性改用 `init_with_fallback`（config 關閉時零行為變化）
-- [ ] 5.4 端對端驗證：無 Server 環境 Local 模式可用 → 起 fake/真實 Server → 啟動時 rehydrate → registry 翻 Ready + StorageMode 切 ServerUrl
+- [x] 5.1 `sync_to_qdrant` 改用 `init_with_fallback`
+- [x] 5.2 CLI 啟動邊界呼叫 `check_and_resync(db, probe, job, workspace_key)`（probe 包 10ms `is_available` 邊界，對齊 memory-resync spec）
+- [x] 5.3 `graphify-mcp` `MemoryQueryService` 選擇性改用 `init_with_fallback`（config 關閉時零行為變化）
+- [x] 5.4 端對端驗證：無 Server 環境 Local 模式可用 → 起 fake/真實 Server → 啟動時 rehydrate → registry 翻 Ready + StorageMode 切 ServerUrl
 
 ## 6. 文件與驗證
 
-- [ ] 6.1 docs/architecture-memory-plugin.md / plugin_system.md 增補雙軌 + rehydration 段落（RFC-0004 §1.3 pseudocode 註記：`from_path` 不存在，以受管程序取代；docs/ref 原條文不動 #3127）
-- [ ] 6.2 `cargo fmt` + `cargo clippy -D warnings`（workspace 零警告 #3154）+ 全測試通過
-- [ ] 6.3 `openspec validate` 通過
+- [x] 6.1 docs/architecture-memory-plugin.md / plugin_system.md 增補雙軌 + rehydration 段落（RFC-0004 §1.3 pseudocode 註記：`from_path` 不存在，以受管程序取代；docs/ref 原條文不動 #3127）
+- [x] 6.2 `cargo fmt` + `cargo clippy -D warnings`（workspace 零警告 #3154）+ 全測試通過
+- [x] 6.3 `openspec validate` 通過

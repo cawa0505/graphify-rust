@@ -19,6 +19,6 @@ pub use config::{
 };
 pub use memory::{
     MemoryNode, MemoryQueryInput, MemoryQueryResult, MemorySearcher, QdrantMemoryStore,
-    StorageMode,
+    StorageMode, server_healthy,
 };
 pub use plugin_memory::{PluginDomainMemory, plugin_collection_name};

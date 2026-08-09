@@ -19,10 +19,10 @@ use graphify_core::plugin_memory::PluginMemoryEnvelope;
 use graphify_memory::plugin_memory::PluginDomainMemory;
 use graphify_registry::db::{RegistryDb, RegistryError};
 use graphify_registry::resync::SyncJob;
+use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollection, PointId, PointStruct, UpsertPoints, Value as QdrantValue, VectorsConfig,
 };
-use qdrant_client::Qdrant;
 use tokio::runtime::Runtime;
 
 /// One-way delta rehydration: local JSONL WAL → external Qdrant server.
@@ -128,13 +128,22 @@ impl RehydrateJob {
 }
 
 impl SyncJob for RehydrateJob {
-    fn run(&self, db: &RegistryDb, plugin_id: &str, workspace_key: &str) -> Result<(), RegistryError> {
+    fn run(
+        &self,
+        db: &RegistryDb,
+        plugin_id: &str,
+        workspace_key: &str,
+    ) -> Result<(), RegistryError> {
         let reg = db
             .get_registration(plugin_id, workspace_key)?
             .ok_or_else(|| RegistryError::Schema(format!("no registration for {plugin_id}")))?;
         let pending = self
             .local_jsonl_store
-            .pending_records_since::<serde_json::Value>(plugin_id, workspace_key, reg.last_synced_at)
+            .pending_records_since::<serde_json::Value>(
+                plugin_id,
+                workspace_key,
+                reg.last_synced_at,
+            )
             .map_err(|e| RegistryError::Schema(format!("reading pending deltas: {e}")))?;
         if pending.is_empty() {
             return Ok(());
@@ -151,7 +160,11 @@ mod tests {
     use graphify_core::plugin_memory::PluginMemoryEnvelope;
     use graphify_registry::db::RegistryDb;
 
-    fn envelope(workspace_key: &str, record_id: &str, created_at: i64) -> PluginMemoryEnvelope<serde_json::Value> {
+    fn envelope(
+        workspace_key: &str,
+        record_id: &str,
+        created_at: i64,
+    ) -> PluginMemoryEnvelope<serde_json::Value> {
         PluginMemoryEnvelope::new(
             workspace_key,
             "handoff",
@@ -169,7 +182,10 @@ mod tests {
         let a2 = RehydrateJob::record_point_id("ws-a", "rec-1");
         assert_eq!(a1, a2);
         let b = RehydrateJob::record_point_id("ws-b", "rec-1");
-        assert_ne!(a1, b, "same record_id in different workspaces must not collide");
+        assert_ne!(
+            a1, b,
+            "same record_id in different workspaces must not collide"
+        );
         let a2b = RehydrateJob::record_point_id("ws-a", "rec-2");
         assert_ne!(a1, a2b);
     }
@@ -187,7 +203,12 @@ mod tests {
             point.payload.get("workspace_key"),
             Some(&QdrantValue::from(serde_json::json!("ws-a")))
         );
-        assert_eq!(point.id, Some(PointId::from(RehydrateJob::record_point_id("ws-a", "rec-1"))));
+        assert_eq!(
+            point.id,
+            Some(PointId::from(RehydrateJob::record_point_id(
+                "ws-a", "rec-1"
+            )))
+        );
         Ok(())
     }
 

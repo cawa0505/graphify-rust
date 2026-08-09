@@ -37,10 +37,18 @@ impl MemoryQueryService {
         let config = LLMConfig::load_from_file("").unwrap_or_default();
         let lt_config = config.memory.long_term.clone();
         let concurrency = config.extraction.concurrency;
-        Ok(Self {
-            runtime,
-            store: QdrantMemoryStore::new(lt_config, concurrency),
-        })
+        // P4 task 5.3: prefer dual-track init (server, or managed local
+        // process when the server is unreachable). `local_fallback_enabled`
+        // defaults to false, so this is exactly `QdrantMemoryStore::new`
+        // with zero behavior change unless the user opts in. If init fails
+        // (e.g. local binary download error), fall back to the plain store;
+        // queries then report `Unavailable` instead of failing the service.
+        let store = runtime.block_on(async {
+            QdrantMemoryStore::init_with_fallback(lt_config.clone(), concurrency)
+                .await
+                .unwrap_or_else(|_| QdrantMemoryStore::new(lt_config, concurrency))
+        });
+        Ok(Self { runtime, store })
     }
 
     /// Runs a restricted memory query and serializes the result.

@@ -172,10 +172,13 @@ fn choose_mode(server_healthy: bool, fallback_enabled: bool) -> StorageMode {
     }
 }
 
-/// Probes the configured server's `/healthz` with a bounded 10ms timeout
-/// (tasks 3.2). A healthy answer means "use the server"; any failure —
-/// timeout, connection refused, non-200 — means "fall back to local".
-async fn server_healthy(url: &str) -> bool {
+/// Probes the configured server's `/healthz` with a bounded 10ms timeout.
+///
+/// A healthy answer means "use the server"; any failure — timeout,
+/// connection refused, non-200 — means "fall back to local" (tasks 3.2).
+/// Public so the startup boundary (`graphify-cli`, `graphify-mcp`) can
+/// implement the resync `ProviderProbe` with the same bounded semantics.
+pub async fn server_healthy(url: &str) -> bool {
     let client = Client::builder()
         .timeout(Duration::from_millis(10))
         .build()
@@ -250,7 +253,9 @@ impl QdrantMemoryStore {
         let healthy = server_healthy(&config.qdrant.url).await;
         match choose_mode(healthy, config.qdrant.local_fallback_enabled) {
             StorageMode::ServerUrl(_) => Ok(Self::new(config, embedding_concurrency)),
-            StorageMode::LocalProcess => Self::spawn_local_store(config, embedding_concurrency).await,
+            StorageMode::LocalProcess => {
+                Self::spawn_local_store(config, embedding_concurrency).await
+            }
         }
     }
 
@@ -269,7 +274,9 @@ impl QdrantMemoryStore {
         let bin_path = bin_dir.join("qdrant");
         if !bin_path.exists() {
             let client = Client::builder()
-                .timeout(Duration::from_mins(1))                .build()
+                .timeout(Duration::from_mins(1))
+                .user_agent("graphify-rust/qdrant-local-fallback")
+                .build()
                 .unwrap_or_default();
             QdrantLocalProcess::download_binary(
                 &client,
@@ -1350,7 +1357,10 @@ mod tests {
     #[test]
     fn test_choose_mode_healthy_prefers_server() {
         assert!(matches!(choose_mode(true, true), StorageMode::ServerUrl(_)));
-        assert!(matches!(choose_mode(true, false), StorageMode::ServerUrl(_)));
+        assert!(matches!(
+            choose_mode(true, false),
+            StorageMode::ServerUrl(_)
+        ));
     }
 
     #[test]

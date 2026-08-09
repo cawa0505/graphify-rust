@@ -153,7 +153,31 @@ impl LLMConfig {
     /// # Errors
     /// Returns an error if no configuration file could be found or parsed.
     #[allow(clippy::too_many_lines)] // ponytail: file reading and legacy JSON migration paths are naturally long
-    pub fn load_from_file<P: AsRef<Path>>(_path: P) -> Result<Self> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        // An explicit CLI path must win over environment and XDG defaults.
+        let path = path.as_ref();
+        if !path.as_os_str().is_empty() {
+            let content = fs::read_to_string(path)
+                .map_err(|e| anyhow!("Failed to read config '{}': {}", path.display(), e))?;
+            let mut config: LLMConfig = toml::from_str(&content)
+                .map_err(|e| anyhow!("Failed to parse TOML config '{}': {}", path.display(), e))?;
+
+            if config.api_keys.is_empty() {
+                for provider in &config.providers {
+                    if let Some(ref keys) = provider.api_key {
+                        config.api_keys.extend(
+                            keys.split(',')
+                                .map(str::trim)
+                                .filter(|key| !key.is_empty())
+                                .map(ToString::to_string),
+                        );
+                    }
+                }
+            }
+            config.providers.sort_by_key(|provider| provider.priority);
+            return Ok(config);
+        }
+
         // 1. Check GRAPHIFY_CONFIG_PATH
         let env_path = std::env::var("GRAPHIFY_CONFIG_PATH").ok();
         if let Some(p) = env_path {
@@ -396,6 +420,23 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_from_explicit_path() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "graphify-explicit-config-{}.toml",
+            std::process::id()
+        ));
+        let mut config = LLMConfig::default();
+        config.providers[0].name = "explicit-provider".to_string();
+        fs::write(&path, toml::to_string(&config)?)?;
+
+        let loaded = LLMConfig::load_from_file(&path)?;
+        assert_eq!(loaded.providers[0].name, "explicit-provider");
+
+        fs::remove_file(path)?;
         Ok(())
     }
 
