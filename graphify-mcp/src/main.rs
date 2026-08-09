@@ -175,6 +175,10 @@ fn main() -> Result<()> {
 
         match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => {
+                // MCP spec: notifications (no id) must never receive a
+                // response. Skipping them keeps the stdio stream aligned
+                // with the client's pending-request bookkeeping.
+                let is_notification = request.id.is_none();
                 let response = handle_request(
                     request,
                     Arc::clone(&state),
@@ -182,6 +186,9 @@ fn main() -> Result<()> {
                     Rc::clone(&memory_query),
                     Rc::clone(&relay),
                 );
+                if is_notification {
+                    continue;
+                }
                 let response_json = serde_json::to_string(&response)?;
                 writeln!(stdout, "{response_json}")?;
                 stdout.flush()?;
