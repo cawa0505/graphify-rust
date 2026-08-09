@@ -518,7 +518,12 @@ fn handle_request(
                     Ok(val) => JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,
-                        result: Some(val),
+                        // MCP spec: tools/call result must be an object with content
+                        // blocks. A bare string result is dropped by strict clients
+                        // (opencode 1.18.11 times out waiting for the response).
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
                         error: None,
                     },
                     Err(e) => JsonRpcResponse {
