@@ -44,18 +44,23 @@ pub fn load_snapshot(path: &Path) -> BTreeMap<String, String> {
 /// Persists the snapshot atomically (write temp + rename).
 pub fn save_snapshot(path: &Path, hashes: &BTreeMap<String, String>) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(hashes)?;
     let tmp = path.with_extension("snapshot.tmp");
     std::fs::write(&tmp, json).with_context(|| format!("Failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("Failed to rename {} -> {}", tmp.display(), path.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("Failed to rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
 /// Returns the set of file keys that are new, modified, or deleted relative to `old`.
 #[must_use]
-pub fn diff_hashes(old: &BTreeMap<String, String>, current: &BTreeMap<String, String>) -> HashSet<String> {
+pub fn diff_hashes(
+    old: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> HashSet<String> {
     let mut changed = HashSet::new();
 
     // new or modified files

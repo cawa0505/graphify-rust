@@ -2,16 +2,16 @@
 
 ## Why
 
-`docs/plugin_system.md` 規劃了微核心 Plugin 架構（review / handoff / opendoc 三大插件），以 `workspace_uuid` 作為 opendoc-mcp → graphify → plugins 間的路由鑑別外鍵。目前 GraphifyCore 沒有任何 Plugin 抽象，無法承載 `graphify-plugin-handoff` 等內嵌型 crate。v1 需先落地最小 Plugin Trait，作為所有內嵌插件的契約起點。
+`docs/plugin_system.md` 規劃了微核心 Plugin 架構（review / handoff / opendoc 三大插件），以 `workspace_key` 作為 opendoc-mcp → graphify → plugins 間的路由鑑別外鍵。目前 GraphifyCore 沒有任何 Plugin 抽象，無法承載 `graphify-plugin-handoff` 等內嵌型 crate。v1 需先落地最小 Plugin Trait，作為所有內嵌插件的契約起點。
 
 ## What Changes
 
 - 在 `graphify-core` 定義 `GraphifyPlugin` trait（v1）：
   - `get_id(&self) -> &str`：插件唯一識別碼。
-  - `bind(&mut self, ctx: WorkspaceContext)`：綁定工作區上下文（含 `workspace_uuid`）。
-  - `get_workspace_uuid(&self) -> &str`：回傳綁定後的工作區 UUID（路由鑑別用）。
+  - `bind(&mut self, ctx: WorkspaceContext)`：綁定工作區上下文（含 `workspace_key`）。
+  - `get_workspace_key(&self) -> &str`：回傳綁定後的工作區 UUID（路由鑑別用）。
   - `sync_toon(&mut self, opt_toon: Option<Vec<u8>>) -> Vec<u8>`：同步 .toon 載荷並回傳處理後輸出。
-- 新增 `WorkspaceContext` 結構（`workspace_uuid`、`workspace_name`、`root_path`、`timestamp`），與 `docs/plugin_system.md` §3.1 契約一致。
+- 新增 `WorkspaceContext` 結構（`workspace_key`、`workspace_name`、`root_path`、`timestamp`），與 `docs/plugin_system.md` §3.1 契約一致。
 - 提供一個可用的 reference 實作範例（example 或 test），證明 trait 可被外部 crate 實作。
 - 在 `docs/` 同步 Trait 規格與 crate 依賴圖（plugin 如何依附 graphify-core，且不引入 LLM/MCP 依賴）。
 

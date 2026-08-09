@@ -1,7 +1,12 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub use graphify_memory::config::{
+    EmbeddingConfig, LongTermMemoryConfig, MemoryConfig, QdrantConfig, ShortTermMemoryConfig,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -40,101 +45,67 @@ impl Default for ExtractionConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShortTermMemoryConfig {
-    pub max_messages: usize,
-}
-
-impl Default for ShortTermMemoryConfig {
-    fn default() -> Self {
-        Self { max_messages: 20 }
-    }
-}
-
-fn default_indexing_threshold() -> usize {
-    20000
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QdrantConfig {
-    pub url: String,
-    pub api_key: Option<String>,
-    pub collection: String,
-    pub distance: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PluginConfig {
+    pub command: String,
     #[serde(default)]
-    pub grpc: bool,
-    #[serde(default = "default_indexing_threshold")]
-    pub indexing_threshold: usize,
-}
-
-impl Default for QdrantConfig {
-    fn default() -> Self {
-        Self {
-            url: "http://localhost:6333".to_string(),
-            api_key: None,
-            collection: "graphify_memory".to_string(),
-            distance: "Cosine".to_string(),
-            grpc: false,
-            indexing_threshold: 20000,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingConfig {
-    pub provider: String,
-    pub endpoint: String,
-    pub model: String,
-    pub vector_size: usize,
-}
-
-impl Default for EmbeddingConfig {
-    fn default() -> Self {
-        Self {
-            provider: "ollama".to_string(),
-            endpoint: "http://localhost:11434".to_string(),
-            model: "bge-m3".to_string(),
-            vector_size: 1024,
-        }
-    }
-}
-
-fn default_index_kinds() -> Vec<String> {
-    vec![
-        "module".to_string(),
-        "class".to_string(),
-        "struct".to_string(),
-        "trait".to_string(),
-        "interface".to_string(),
-    ]
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LongTermMemoryConfig {
-    pub enabled: bool,
-    pub provider: String,
-    pub embedding: EmbeddingConfig,
-    pub qdrant: QdrantConfig,
-    #[serde(default = "default_index_kinds")]
-    pub index_kinds: Vec<String>,
-}
-
-impl Default for LongTermMemoryConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            provider: "qdrant".to_string(),
-            embedding: EmbeddingConfig::default(),
-            qdrant: QdrantConfig::default(),
-            index_kinds: default_index_kinds(),
-        }
-    }
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MemoryConfig {
-    pub short_term: ShortTermMemoryConfig,
-    pub long_term: LongTermMemoryConfig,
+pub struct PluginsConfig {
+    #[serde(default)]
+    pub plugins: HashMap<String, PluginConfig>,
+}
+
+fn default_plugins_config_path() -> Option<PathBuf> {
+    std::env::var("GRAPHIFY_CONFIG_PATH")
+        .ok()
+        .map(PathBuf::from)
+}
+
+impl PluginsConfig {
+    /// Loads plugin configuration from the first available source:
+    /// 1. `GRAPHIFY_CONFIG_PATH` env var.
+    /// 2. XDG standard config path (`~/.config/graphify/config.toml`).
+    /// 3. Legacy JSON config path (`~/.graphify/config.json`) — plugin section not migrated.
+    ///
+    /// # Errors
+    /// Returns an error if an existing configuration file could not be parsed.
+    pub fn load() -> Result<Self> {
+        let path = default_plugins_config_path().unwrap_or_else(|| {
+            std::env::var("XDG_CONFIG_HOME").map_or_else(
+                |_| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    Path::new(&home)
+                        .join(".config")
+                        .join("graphify")
+                        .join("config.toml")
+                },
+                |xdg| PathBuf::from(xdg).join("graphify").join("config.toml"),
+            )
+        });
+        Self::load_from(Some(path))
+    }
+
+    /// Loads plugin configuration from a specific TOML file path.
+    ///
+    /// A missing file yields an empty container; a malformed file is an error.
+    pub fn load_from(path: Option<PathBuf>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::default());
+        };
+        let Ok(content) = fs::read_to_string(&path) else {
+            return Ok(Self::default());
+        };
+        let parsed: Self = toml::from_str(&content)
+            .map_err(|e| anyhow!("Failed to parse plugin config {}: {}", path.display(), e))?;
+        Ok(parsed)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +161,7 @@ impl LLMConfig {
                 .map_err(|e| anyhow!("Failed to read config from GRAPHIFY_CONFIG_PATH: {}", e))?;
             let mut config: LLMConfig = toml::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
-            
+
             // Auto-populate api_keys if empty
             if config.api_keys.is_empty() {
                 for p in &config.providers {
@@ -210,15 +181,19 @@ impl LLMConfig {
         }
 
         // 2. Check XDG Path (~/.config/graphify/config.toml)
-        let xdg_path = std::env::var("XDG_CONFIG_HOME").map_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            std::path::Path::new(&home).join(".config").join("graphify").join("config.toml")
-        }, |xdg_home| {
-            std::path::PathBuf::from(xdg_home).join("graphify").join("config.toml")
-        });
-        
+        let xdg_path = std::env::var("XDG_CONFIG_HOME").map_or_else(
+            |_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::Path::new(&home)
+                    .join(".config")
+                    .join("graphify")
+                    .join("config.toml")
+            },
+            |xdg_home| PathBuf::from(xdg_home).join("graphify").join("config.toml"),
+        );
+
         if xdg_path.exists() {
-            let content = fs::read_to_string(xdg_path)
+            let content = fs::read_to_string(&xdg_path)
                 .map_err(|e| anyhow!("Failed to read XDG config: {}", e))?;
             let mut config: LLMConfig = toml::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
@@ -243,12 +218,14 @@ impl LLMConfig {
 
         // 3. Legacy JSON Migration (~/.graphify/config.json)
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let final_legacy_path = std::path::Path::new(&home).join(".graphify").join("config.json");
+        let final_legacy_path = std::path::Path::new(&home)
+            .join(".graphify")
+            .join("config.json");
 
         if final_legacy_path.exists() {
             let content = fs::read_to_string(final_legacy_path)
                 .map_err(|e| anyhow!("Failed to read legacy config: {}", e))?;
-            
+
             let legacy: LegacyConfig = serde_json::from_str(&content)
                 .map_err(|e| anyhow!("Failed to parse legacy JSON: {}", e))?;
 
@@ -274,10 +251,10 @@ impl LLMConfig {
                     };
                     let endpoint = p_val["endpoint"].as_str().unwrap_or("").to_string();
                     let model = p_val["model"].as_str().unwrap_or("").to_string();
-                    
+
                     let raw_priority = p_val["priority"].as_u64().unwrap_or(10);
                     let priority = usize::try_from(raw_priority).unwrap_or(10);
-                    
+
                     let p = Provider {
                         name,
                         r#type: r_type,
@@ -299,7 +276,7 @@ impl LLMConfig {
             if let Some(ex_val) = legacy.extraction {
                 let chunk_val = ex_val["chunk_size"].as_u64().unwrap_or(1024);
                 let concurrency_val = ex_val["max_concurrency"].as_u64().unwrap_or(1);
-                
+
                 config.extraction.chunk_size = usize::try_from(chunk_val).unwrap_or(1024);
                 config.extraction.max_concurrency = usize::try_from(concurrency_val).unwrap_or(1);
             }
@@ -314,14 +291,19 @@ impl LLMConfig {
             let toml_str = toml::to_string_pretty(&config)
                 .map_err(|e| anyhow!("Failed to serialize migrated TOML: {}", e))?;
             fs::write(&xdg_path, toml_str).ok();
-            eprintln!("[graphify] Migrated legacy JSON config to {}", xdg_path.display());
+            eprintln!(
+                "[graphify] Migrated legacy JSON config to {}",
+                xdg_path.display()
+            );
 
             return Ok(config);
         }
 
         // Default fallback if nothing exists: auto-create default TOML configuration
         let default_config = LLMConfig::default();
-        let xdg_dir = xdg_path.parent().ok_or_else(|| anyhow!("Invalid XDG path parent"))?;
+        let xdg_dir = xdg_path
+            .parent()
+            .ok_or_else(|| anyhow!("Invalid XDG path parent"))?;
         if !xdg_dir.exists() {
             fs::create_dir_all(xdg_dir)
                 .map_err(|e| anyhow!("Failed to create XDG config directory: {}", e))?;
@@ -330,8 +312,107 @@ impl LLMConfig {
             .map_err(|e| anyhow!("Failed to serialize default TOML: {}", e))?;
         fs::write(&xdg_path, &toml_str)
             .map_err(|e| anyhow!("Failed to write default XDG config: {}", e))?;
-        eprintln!("[graphify] Created default configuration at {}", xdg_path.display());
+        eprintln!(
+            "[graphify] Created default configuration at {}",
+            xdg_path.display()
+        );
 
         Ok(default_config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_multi_plugin_toml() -> Result<()> {
+        let toml_str = r#"
+            [plugins.opendoc]
+            command = "opendoc-mcp"
+            args = ["--port", "8080"]
+            env = { RUST_LOG = "debug" }
+            cwd = "/tmp/opendoc"
+
+            [plugins.review]
+            command = "graphify-plugin-review"
+        "#;
+        let parsed: PluginsConfig = toml::from_str(toml_str)?;
+        assert_eq!(parsed.plugins.len(), 2, "both plugins parsed");
+
+        let opendoc = parsed
+            .plugins
+            .get("opendoc")
+            .ok_or_else(|| anyhow!("opendoc exists"))?;
+        assert_eq!(opendoc.command, "opendoc-mcp");
+        assert_eq!(opendoc.args, vec!["--port", "8080"]);
+        assert_eq!(opendoc.env.get("RUST_LOG"), Some(&"debug".to_string()));
+        assert_eq!(opendoc.cwd.as_deref(), Some("/tmp/opendoc"));
+
+        let review = parsed
+            .plugins
+            .get("review")
+            .ok_or_else(|| anyhow!("review exists"))?;
+        assert_eq!(review.command, "graphify-plugin-review");
+        assert!(review.args.is_empty(), "args default to empty");
+        assert!(review.cwd.is_none(), "cwd defaults to none");
+        Ok(())
+    }
+
+    #[test]
+    fn test_missing_command_is_error() {
+        let toml_str = r#"
+            [plugins.broken]
+            args = ["--flag"]
+        "#;
+        let err = toml::from_str::<PluginsConfig>(toml_str);
+        assert!(err.is_err(), "missing command must fail to parse");
+    }
+
+    #[test]
+    fn test_empty_plugins_table() -> Result<()> {
+        let parsed: PluginsConfig = toml::from_str("")?;
+        assert!(
+            parsed.plugins.is_empty(),
+            "no [plugins] section => empty map"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_from_xdg_path() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("graphify-cfg-test-{}", std::process::id()));
+        let cfg_dir = dir.join("graphify");
+        std::fs::create_dir_all(&cfg_dir)?;
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[plugins.demo]\ncommand = \"demo-mcp\"\n",
+        )?;
+
+        let parsed = PluginsConfig::load_from(Some(cfg_dir.join("config.toml")))?;
+        assert!(
+            parsed.plugins.contains_key("demo"),
+            "plugin from config file loaded"
+        );
+
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_missing_file_is_empty() -> Result<()> {
+        let parsed = PluginsConfig::load_from(Some(PathBuf::from("/nonexistent/nope.toml")))?;
+        assert!(
+            parsed.plugins.is_empty(),
+            "missing file yields empty container"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_none_path_is_empty() -> Result<()> {
+        let parsed = PluginsConfig::load_from(None)?;
+        assert!(parsed.plugins.is_empty(), "no path yields empty container");
+        Ok(())
     }
 }

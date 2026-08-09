@@ -24,7 +24,7 @@
    `Option` 讓插件可被動同步（收到外部 .toon）或被動要求輸出（`None` 時以綁定上下文自產），覆蓋 handoff「匯出子圖」與 opendoc「接收外部載荷」兩種方向。回傳 `Vec<u8>` 保持格式中立（.toon 位元組），不綁定 graphify-core 的 `toon.rs` 型別。
 
 3. **`WorkspaceContext` 直接以欄位 struct 定義**
-   與 `docs/plugin_system.md` §3.1 的介面契約逐欄對齊（`workspace_uuid` / `workspace_name` / `root_path` / `timestamp`），`timestamp` 用 `i64`（Unix epoch 秒）避免 chrono 依賴。
+   與 `docs/plugin_system.md` §3.1 的介面契約逐欄對齊（`workspace_key` / `workspace_name` / `root_path` / `timestamp`），`timestamp` 用 `i64`（Unix epoch 秒）避免 chrono 依賴。
 
 4. **reference 實作放在 `graphify-core/src/plugin.rs` 的 `#[cfg(test)]`**
    證明 trait 可實作且通過綁定/同步流程，同時避免在核心加入不必要的範例代碼路徑。測試需回傳 `Result` 並以 `?` 傳播（workspace 禁 `unwrap`/`expect`）。
@@ -33,7 +33,7 @@
 
 - [trait 方法簽名過早定型] → v1 僅 4 方法，均對應 `docs/plugin_system.md` 已承諾的契約；日後擴充（如 `on_index_complete`）為 additive，不破壞既有實作。
 - [`sync_toon` 回傳 `Vec<u8>` 語意模糊] → 由 spec 的 Scenario 鎖定「處理後輸出」，並在 rustdoc 註明方向語意；具體插件協議留待各插件 change 定義。
-- [`get_workspace_uuid` 在未 bind 時回傳何值] → 契約要求 bind 後才有效；未 bind 時回傳空字串並在 rustdoc 標注，避免引入 `Result` 破壞最小簽名。
+- [`get_workspace_key` 在未 bind 時回傳何值] → 契約要求 bind 後才有效；未 bind 時回傳空字串並在 rustdoc 標注，避免引入 `Result` 破壞最小簽名。
 
 ## Open Questions
 

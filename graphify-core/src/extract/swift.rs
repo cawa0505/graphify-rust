@@ -3,9 +3,9 @@
 // ponytail: allow collapsible_if for cleaner matching of AST node patterns
 #![allow(clippy::collapsible_if)]
 
-use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType};
+use crate::types::{Edge, ExtractionResult, FileType, Node, NodeId};
 use anyhow::{Result, anyhow};
-use tree_sitter::{Parser, Node as TSNode};
+use tree_sitter::{Node as TSNode, Parser};
 
 pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     let mut parser = Parser::new();
@@ -38,7 +38,14 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     });
 
     let source_bytes = content.as_bytes();
-    traverse_tree(tree.root_node(), source_bytes, file_path, &module_id, &mut nodes, &mut edges)?;
+    traverse_tree(
+        tree.root_node(),
+        source_bytes,
+        file_path,
+        &module_id,
+        &mut nodes,
+        &mut edges,
+    )?;
 
     Ok(ExtractionResult { nodes, edges })
 }
@@ -60,12 +67,16 @@ fn traverse_tree(
         let mut next_parent_id = current_parent_id.clone();
 
         match kind {
-            "class_declaration" | "protocol_declaration" | "struct_declaration" | "enum_declaration" | "extension_declaration" => {
+            "class_declaration"
+            | "protocol_declaration"
+            | "struct_declaration"
+            | "enum_declaration"
+            | "extension_declaration" => {
                 if let Some(name_node) = current.child_by_field_name("name") {
                     let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownType");
                     let node_id = NodeId(format!("{file_path}:class:{name}"));
                     let start_line = current.start_position().row + 1;
-                    
+
                     nodes.push(Node {
                         id: node_id.clone(),
                         label: name.to_string(),
@@ -93,7 +104,8 @@ fn traverse_tree(
             }
             "function_declaration" | "init_declaration" | "deinit_declaration" => {
                 let name = if kind == "function_declaration" {
-                    current.child_by_field_name("name")
+                    current
+                        .child_by_field_name("name")
                         .and_then(|n| n.utf8_text(source_bytes).ok())
                         .unwrap_or("UnknownFunction")
                 } else if kind == "init_declaration" {
@@ -144,7 +156,13 @@ fn traverse_tree(
     Ok(())
 }
 
-fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &NodeId, edges: &mut Vec<Edge>) {
+fn find_calls(
+    node: TSNode,
+    source_bytes: &[u8],
+    file_path: &str,
+    caller_id: &NodeId,
+    edges: &mut Vec<Edge>,
+) {
     let mut cursor = node.walk();
     let mut stack = vec![node];
 

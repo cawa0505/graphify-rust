@@ -3,16 +3,17 @@
 // ponytail: allow collapsible_if for nested directory filtering checks
 #![allow(clippy::collapsible_if)]
 
+pub mod plugin_host;
 pub mod skill;
 pub mod snapshot;
 pub mod tui;
 pub mod ui;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use graphify_core::{
-    build_graph, extract_file, find_shortest_path, query_bfs, GraphMetadata, GraphOutput,
-    Node, NodeId, ExtractionResult,
+    ExtractionResult, GraphMetadata, GraphOutput, GraphUpdateEvent, GraphUpdateKind, Node, NodeId,
+    build_graph, derive_workspace_key, extract_file, find_shortest_path, query_bfs,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
@@ -64,7 +65,7 @@ enum Commands {
         /// Install to global level (~/.config/opencode/skills and ~/.cursorrules)
         #[arg(short, long)]
         global: bool,
-        
+
         /// Custom target directory for installation
         #[arg(short, long)]
         dir: Option<PathBuf>,
@@ -90,17 +91,48 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+    /// Manage bound plugins and trigger graph-update events
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PluginCommand {
+    /// Manually trigger graph-update hooks for all bound plugins
+    RunHooks,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Extract { path, output, concurrency } => run_extract(&path, &output, concurrency)?,
-        Commands::Query { target, depth, graph } => run_query(&target, depth, &graph)?,
-        Commands::Path { source, target, graph } => run_path(&source, &target, &graph)?,
+        Commands::Extract {
+            path,
+            output,
+            concurrency,
+        } => run_extract(&path, &output, concurrency)?,
+        Commands::Query {
+            target,
+            depth,
+            graph,
+        } => run_query(&target, depth, &graph)?,
+        Commands::Path {
+            source,
+            target,
+            graph,
+        } => run_path(&source, &target, &graph)?,
         Commands::InstallSkill { global, dir } => skill::install_skill(global, dir)?,
         Commands::Tui { graph } => run_tui(&graph)?,
-        Commands::Index { path, config, output, force } => run_index(&path, config.as_deref(), output.as_deref(), force)?,
+        Commands::Index {
+            path,
+            config,
+            output,
+            force,
+        } => run_index(&path, config.as_deref(), output.as_deref(), force)?,
+        Commands::Plugin { command } => match command {
+            PluginCommand::RunHooks => run_hooks()?,
+        },
     }
     Ok(())
 }
@@ -155,6 +187,7 @@ fn run_extract(input_path: &Path, output_path: &Path, concurrency: Option<usize>
         languages: languages.into_iter().collect(),
         input_tokens: 0,
         output_tokens: 0,
+        ..Default::default()
     };
 
     let graph_out = GraphOutput {
@@ -188,6 +221,14 @@ fn run_extract(input_path: &Path, output_path: &Path, concurrency: Option<usize>
         graph_out.metadata.total_nodes,
         graph_out.metadata.total_edges
     );
+
+    // Broadcast an `Extracted` graph-update event to all bound plugins.
+    let mut host = plugin_host::PluginHost::new();
+    host.broadcast(&GraphUpdateEvent::new(
+        derive_workspace_key(input_path),
+        graph_out.nodes.iter().map(|n| n.id.clone()).collect(),
+        GraphUpdateKind::Extracted,
+    ));
     Ok(())
 }
 
@@ -238,50 +279,89 @@ fn load_graph_output(path: &Path) -> Result<GraphOutput> {
             Ok(output) => Ok(output),
             Err(e) => {
                 // If standard parsing fails, try parsing custom legacy / partial json or fallback
-                eprintln!("[graphify] Warning: Failed to parse JSON as current schema ({e}). Attempting legacy transformation...");
+                eprintln!(
+                    "[graphify] Warning: Failed to parse JSON as current schema ({e}). Attempting legacy transformation..."
+                );
                 // Try reading as unstructured json to see if we can migrate it
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(nodes_arr) = val.get("nodes").and_then(serde_json::Value::as_array) {
+                    if let Some(nodes_arr) = val.get("nodes").and_then(serde_json::Value::as_array)
+                    {
                         let mut nodes = Vec::new();
                         for n_val in nodes_arr {
-                            let id = n_val.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                            let label = n_val.get("label").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                            
-                            let file_type = match n_val.get("file_type").and_then(serde_json::Value::as_str) {
-                                Some("code") => graphify_core::FileType::Code,
-                                Some("document") => graphify_core::FileType::Document,
-                                Some("paper") => graphify_core::FileType::Paper,
-                                Some("image") => graphify_core::FileType::Image,
-                                Some("rationale") => graphify_core::FileType::Rationale,
-                                Some("concept") => graphify_core::FileType::Concept,
-                                _ => {
-                                    // Map legacy "kind" or fallback
-                                    let kind = n_val.get("kind").and_then(serde_json::Value::as_str).unwrap_or("");
-                                    if kind == "file" || kind == "module" {
-                                        graphify_core::FileType::Document
-                                    } else {
-                                        graphify_core::FileType::Code
-                                    }
-                                }
-                            };
+                            let id = n_val
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let label = n_val
+                                .get("label")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
 
-                            let kind = n_val.get("kind").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
-                            let language = n_val.get("language").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
-                            let source_file = n_val.get("source_file")
+                            let file_type =
+                                match n_val.get("file_type").and_then(serde_json::Value::as_str) {
+                                    Some("code") => graphify_core::FileType::Code,
+                                    Some("document") => graphify_core::FileType::Document,
+                                    Some("paper") => graphify_core::FileType::Paper,
+                                    Some("image") => graphify_core::FileType::Image,
+                                    Some("rationale") => graphify_core::FileType::Rationale,
+                                    Some("concept") => graphify_core::FileType::Concept,
+                                    _ => {
+                                        // Map legacy "kind" or fallback
+                                        let kind = n_val
+                                            .get("kind")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("");
+                                        if kind == "file" || kind == "module" {
+                                            graphify_core::FileType::Document
+                                        } else {
+                                            graphify_core::FileType::Code
+                                        }
+                                    }
+                                };
+
+                            let kind = n_val
+                                .get("kind")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let language = n_val
+                                .get("language")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let source_file = n_val
+                                .get("source_file")
                                 .or_else(|| n_val.get("file_path"))
                                 .and_then(serde_json::Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            
-                            let start_line_val = n_val.get("start_line").and_then(serde_json::Value::as_u64).unwrap_or(0);
+
+                            let start_line_val = n_val
+                                .get("start_line")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
                             let start_line = usize::try_from(start_line_val).unwrap_or(0);
-                            
-                            let end_line_val = n_val.get("end_line").and_then(serde_json::Value::as_u64).unwrap_or(0);
+
+                            let end_line_val = n_val
+                                .get("end_line")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
                             let end_line = usize::try_from(end_line_val).unwrap_or(0);
-                            
-                            let doc_comment = n_val.get("doc_comment").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
-                            let description = n_val.get("description").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
-                            let metadata = n_val.get("metadata").and_then(serde_json::Value::as_object).cloned();
+
+                            let doc_comment = n_val
+                                .get("doc_comment")
+                                .and_then(serde_json::Value::as_str)
+                                .map(std::string::ToString::to_string);
+                            let description = n_val
+                                .get("description")
+                                .and_then(serde_json::Value::as_str)
+                                .map(std::string::ToString::to_string);
+                            let metadata = n_val
+                                .get("metadata")
+                                .and_then(serde_json::Value::as_object)
+                                .cloned();
 
                             nodes.push(Node {
                                 id: graphify_core::NodeId(id),
@@ -299,19 +379,45 @@ fn load_graph_output(path: &Path) -> Result<GraphOutput> {
                         }
 
                         let mut edges = Vec::new();
-                        if let Some(edges_arr) = val.get("edges").and_then(serde_json::Value::as_array) {
+                        if let Some(edges_arr) =
+                            val.get("edges").and_then(serde_json::Value::as_array)
+                        {
                             for e_val in edges_arr {
-                                let source = e_val.get("source").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                                let target = e_val.get("target").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                                let relation = e_val.get("relation")
+                                let source = e_val
+                                    .get("source")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let target = e_val
+                                    .get("target")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let relation = e_val
+                                    .get("relation")
                                     .or_else(|| e_val.get("kind")) // old schema used "kind" for edges too
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("calls")
                                     .to_string();
-                                let source_file = e_val.get("source_file").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                                let confidence = e_val.get("confidence").and_then(serde_json::Value::as_str).unwrap_or("EXTRACTED").to_string();
-                                let source_location = e_val.get("source_location").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-                                let description = e_val.get("description").and_then(serde_json::Value::as_str).map(std::string::ToString::to_string);
+                                let source_file = e_val
+                                    .get("source_file")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let confidence = e_val
+                                    .get("confidence")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("EXTRACTED")
+                                    .to_string();
+                                let source_location = e_val
+                                    .get("source_location")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let description = e_val
+                                    .get("description")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(std::string::ToString::to_string);
 
                                 edges.push(graphify_core::Edge {
                                     source: graphify_core::NodeId(source),
@@ -325,13 +431,31 @@ fn load_graph_output(path: &Path) -> Result<GraphOutput> {
                             }
                         }
 
-                        let version = val.get("metadata").and_then(|m| m.get("version")).and_then(serde_json::Value::as_str).unwrap_or("1.0.0").to_string();
-                        let generated_at = val.get("metadata").and_then(|m| m.get("generated_at")).and_then(serde_json::Value::as_str).unwrap_or("0").to_string();
+                        let version = val
+                            .get("metadata")
+                            .and_then(|m| m.get("version"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("1.0.0")
+                            .to_string();
+                        let generated_at = val
+                            .get("metadata")
+                            .and_then(|m| m.get("generated_at"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("0")
+                            .to_string();
                         let total_nodes = nodes.len();
                         let total_edges = edges.len();
-                        let languages = val.get("metadata").and_then(|m| m.get("languages"))
+                        let languages = val
+                            .get("metadata")
+                            .and_then(|m| m.get("languages"))
                             .and_then(serde_json::Value::as_array)
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(std::string::ToString::to_string)).collect())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| {
+                                        v.as_str().map(std::string::ToString::to_string)
+                                    })
+                                    .collect()
+                            })
                             .unwrap_or_default();
 
                         return Ok(GraphOutput {
@@ -345,7 +469,8 @@ fn load_graph_output(path: &Path) -> Result<GraphOutput> {
                                 languages,
                                 input_tokens: 0,
                                 output_tokens: 0,
-                            }
+                                ..Default::default()
+                            },
                         });
                     }
                 }
@@ -368,8 +493,8 @@ fn find_node(nodes: &[Node], input: &str) -> Option<NodeId> {
 
 fn run_query(target: &str, depth: usize, graph_path: &Path) -> Result<()> {
     let graph_out = load_graph_output(graph_path)?;
-    let target_node_id = find_node(&graph_out.nodes, target)
-        .ok_or_else(|| anyhow!("Node not found: {target}"))?;
+    let target_node_id =
+        find_node(&graph_out.nodes, target).ok_or_else(|| anyhow!("Node not found: {target}"))?;
 
     let (graph, node_map) = build_graph(&graph_out.nodes, &graph_out.edges)?;
     let result = query_bfs(&graph, &node_map, &target_node_id, depth)?;
@@ -405,7 +530,27 @@ fn run_tui(graph_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>, force: bool) -> Result<()> {
+/// Manually trigger a `Manual` graph-update event for all bound plugins.
+fn run_hooks() -> Result<()> {
+    let mut host = plugin_host::PluginHost::new();
+    host.broadcast(&GraphUpdateEvent::new(
+        derive_workspace_key(std::env::current_dir()?),
+        Vec::new(),
+        GraphUpdateKind::Manual,
+    ));
+    println!(
+        "[graphify] Broadcast manual graph-update event to {} plugin(s).",
+        host.len()
+    );
+    Ok(())
+}
+
+fn run_index(
+    path: &Path,
+    config_path: Option<&Path>,
+    output_path: Option<&Path>,
+    force: bool,
+) -> Result<()> {
     // 1. 載入 LLM & Memory 設定
     let config = if let Some(cfg_p) = config_path {
         graphify_llm::config::LLMConfig::load_from_file(cfg_p.to_str().unwrap_or(""))?
@@ -431,12 +576,15 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
             ));
         }
     } else {
-        // 如果是目錄，優先尋找已經提取好的 graphify-out/graph.toon 
+        // 如果是目錄，優先尋找已經提取好的 graphify-out/graph.toon
         let default_toon = PathBuf::from("graphify-out/graph.toon");
         let default_json = PathBuf::from("graphify-out/graph.json");
-        
+
         let out_p = output_path.map_or_else(|| default_toon.clone(), Path::to_path_buf);
-        let snapshot_path = out_p.parent().unwrap_or_else(|| Path::new(".")).join(".graphify-snapshot.json");
+        let snapshot_path = out_p
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".graphify-snapshot.json");
 
         let current_hashes = snapshot::compute_file_hashes(path)?;
         let old_hashes = snapshot::load_snapshot(&snapshot_path);
@@ -445,23 +593,37 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         let graph = if !force && !old_hashes.is_empty() {
             // Incremental: a snapshot exists, so we only re-extract and sync when files changed.
             if changed.is_empty() {
-                println!("[graphify] No source changes detected since last index ({} file(s) unchanged), skipping.", current_hashes.len());
+                println!(
+                    "[graphify] No source changes detected since last index ({} file(s) unchanged), skipping.",
+                    current_hashes.len()
+                );
                 return Ok(());
             }
-            println!("[graphify] {} file(s) changed, re-extracting graph for incremental sync...", changed.len());
+            println!(
+                "[graphify] {} file(s) changed, re-extracting graph for incremental sync...",
+                changed.len()
+            );
             run_extract(path, &out_p, None)?;
             changed_files = Some(changed);
             load_graph_output(&out_p)?
         } else if out_p.exists() {
             load_graph_output(&out_p)?
         } else if out_p == default_toon && default_json.exists() {
-            println!("[graphify] Found legacy JSON graph at {}, migrating and loading...", default_json.display());
+            println!(
+                "[graphify] Found legacy JSON graph at {}, migrating and loading...",
+                default_json.display()
+            );
             load_graph_output(&default_json)?
         } else {
             // 如果不存在，且使用者沒有下 -f (force) 參數
             if !force {
-                println!("[graphify] No existing extracted graph file found ({}).", out_p.display());
-                println!("[graphify] To parse your codebase and index from scratch, run with --force / -f:");
+                println!(
+                    "[graphify] No existing extracted graph file found ({}).",
+                    out_p.display()
+                );
+                println!(
+                    "[graphify] To parse your codebase and index from scratch, run with --force / -f:"
+                );
                 println!("  graphify index {} --force", path.display());
                 return Ok(());
             }
@@ -481,35 +643,83 @@ fn run_index(path: &Path, config_path: Option<&Path>, output_path: Option<&Path>
         return Ok(());
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    // 3. 建立 Qdrant 實體與非同步執行
-    println!("Connecting to Ollama and Qdrant to generate embeddings and index {} nodes...", graph_out.nodes.len());
-    let store = graphify_llm::memory::QdrantMemoryStore::new(config.clone());
-
-    rt.block_on(async {
-        if force {
-            let _ = store.delete_collection().await;
-            println!("Deleted existing Qdrant collection '{}' for force-recreation.", config.memory.long_term.qdrant.collection);
-        }
-        store.ensure_collection().await?;
-        if let Some(changed) = &changed_files {
-            println!("Incrementally syncing {} changed file(s) into Qdrant collection '{}'...", changed.len(), config.memory.long_term.qdrant.collection);
-            store.sync_nodes(&graph_out.nodes, changed).await?;
-        } else {
-            println!("Uploading nodes to Qdrant collection '{}'...", config.memory.long_term.qdrant.collection);
-            store.upsert_nodes(&graph_out.nodes).await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
+    sync_to_qdrant(
+        &config,
+        &graph_out,
+        changed_files.as_ref(),
+        force,
+        &derive_workspace_key(path),
+    )?;
 
     if let Some((snapshot_path, hashes)) = &snapshot_state {
         snapshot::save_snapshot(snapshot_path, hashes)?;
-        println!("[graphify] Snapshot saved for incremental indexing: {}", snapshot_path.display());
+        println!(
+            "[graphify] Snapshot saved for incremental indexing: {}",
+            snapshot_path.display()
+        );
     }
 
     println!("Successfully indexed codebase graph into Qdrant store!");
+
+    // Broadcast an `Indexed` graph-update event to all bound plugins.
+    broadcast_indexed(path, &graph_out);
     Ok(())
+}
+
+fn sync_to_qdrant(
+    config: &graphify_llm::config::LLMConfig,
+    graph_out: &GraphOutput,
+    changed_files: Option<&HashSet<String>>,
+    force: bool,
+    workspace_key: &str,
+) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    println!(
+        "Connecting to Ollama and Qdrant to generate embeddings and index {} nodes...",
+        graph_out.nodes.len()
+    );
+    let store = graphify_memory::QdrantMemoryStore::new(
+        config.memory.long_term.clone(),
+        config.extraction.concurrency,
+    );
+    rt.block_on(async {
+        if force {
+            let _ = store.delete_collection().await;
+            println!(
+                "Deleted existing Qdrant collection '{}' for force-recreation.",
+                config.memory.long_term.qdrant.collection
+            );
+        }
+        store.ensure_collection().await?;
+        if let Some(changed) = changed_files {
+            println!(
+                "Incrementally syncing {} changed file(s) into Qdrant collection '{}'...",
+                changed.len(),
+                config.memory.long_term.qdrant.collection
+            );
+            store
+                .sync_nodes(&graph_out.nodes, workspace_key, changed)
+                .await?;
+        } else {
+            println!(
+                "Uploading nodes to Qdrant collection '{}'...",
+                config.memory.long_term.qdrant.collection
+            );
+            store.upsert_nodes(&graph_out.nodes, workspace_key).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}
+
+/// Broadcast an `Indexed` graph-update event to all bound plugins.
+fn broadcast_indexed(path: &Path, graph_out: &GraphOutput) {
+    let mut host = plugin_host::PluginHost::new();
+    host.broadcast(&GraphUpdateEvent::new(
+        derive_workspace_key(path),
+        graph_out.nodes.iter().map(|n| n.id.clone()).collect(),
+        GraphUpdateKind::Indexed,
+    ));
 }

@@ -42,10 +42,23 @@ To protect against token bloat in LLM context windows, Graphify employs **Token-
 
 `graphify-core` exposes the embedded plugin contract via the `plugin` module:
 
-- **`GraphifyPlugin` trait**: `get_id` / `bind` / `get_workspace_uuid` / `sync_toon`.
-- **`WorkspaceContext`**: `workspace_uuid` (routing foreign key), `workspace_name`, `root_path`, `timestamp` — matching the interface contract in `docs/plugin_system.md` §3.1.
+- **`GraphifyPlugin` trait**: `get_id` / `bind` / `get_workspace_key` / `sync_toon`.
+- **`WorkspaceContext`**: `workspace_key` (routing foreign key), `workspace_name`, `root_path`, `timestamp` — matching the interface contract in `docs/plugin_system.md` §3.1.
+
+### sync_toon Packet Contract
+
+`sync_toon(Option<Vec<u8>>) -> Vec<u8>` exchanges **.toon documents**, not custom envelopes: the payload is a serialized .toon file, versioned by the `format_version` metadata key. MUST metadata: `format_version` + `workspace_key`. Optional payload sections (`symbol_nodes`, `graph_topology`) align with `docs/plugin_system.md` §3.2. Errors are expressed as an `error` metadata key (no panic, no signature change). Full contract: `openspec/changes/plugin-sync-toon-v1/specs/sync-toon-packet/spec.md`.
 
 The contract is dependency-free (`std` + `serde` only), keeping `graphify-core` free of LLM/HTTP/MCP dependencies. A reference implementation lives in `plugin.rs` tests, proving external crates can implement and drive the trait.
+
+### `.toon` plugin_data Container
+
+`.toon` metadata reserves the `plugin_data` container for plugin-owned enrichment (memory-plugin-integration-v1):
+
+- **Schema**: `metadata.plugin_data.<plugin_id> → serde_json::Value` (plugin-controlled payload). Plugins MUST NOT add arbitrary top-level metadata fields.
+- **Round-trip**: `to_toon` / `from_toon` serialize and restore the container verbatim (escaped JSON in the metadata block).
+- **Tolerance**: absent `plugin_data` parses to an empty container (legacy `.toon` unchanged); unknown plugin entries are preserved verbatim, never interpreted. Empty containers are omitted on serialization.
+- **Domain memory envelope**: plugin records use `graphify_core::plugin_memory::PluginMemoryEnvelope<T>` (`format_version` / `workspace_key` / `plugin_id` / `record_id` / `record_kind` / `created_at` / `source_refs` / `payload`) with plugin-specific payloads (`OpenDocPayload`, `ReviewPayload`, `HandoffPayload`), each independently versioned via `schema_version`. Storage isolation and name derivation live in `graphify-llm::plugin_memory`; the core defines only the data contract.
 
 ### Crate Dependency Graph
 
@@ -60,3 +73,14 @@ The contract is dependency-free (`std` + `serde` only), keeping `graphify-core` 
 ```
 
 Dependency direction: `graphify-plugin-* → graphify-core`. There is no reverse dependency — the core defines the contract, plugins implement it. `graphify-llm` and `graphify-mcp` remain optional layers above; plugins never require them.
+
+### External MCP plugin boundary
+
+Third-party plugins do not add dependencies to `graphify-core`. They run as
+independent MCP servers and are hosted by `graphify-mcp` when the unified
+gateway mode is enabled. The gateway reads `[plugins.<id>]` declarations,
+performs the MCP initialize handshake over stdio, aggregates tools under the
+`graphify_plugin_<plugin_id>_<tool_name>` namespace, and forwards calls. After
+`graph_reindex` or `graphify_notify_plugins`, it sends a
+`notifications/graph_updated` notification containing `kind` and
+`workspace_key`.

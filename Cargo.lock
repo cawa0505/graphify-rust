@@ -907,6 +907,7 @@ dependencies = [
  "crossterm",
  "graphify-core",
  "graphify-llm",
+ "graphify-memory",
  "ratatui",
  "rayon",
  "reqwest",
@@ -945,16 +946,12 @@ name = "graphify-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dirs",
- "fastembed",
  "graphify-core",
- "ort",
- "qdrant-client",
+ "graphify-memory",
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
- "thiserror 1.0.69",
+ "tempfile",
  "tokio",
  "toml",
 ]
@@ -966,9 +963,28 @@ dependencies = [
  "anyhow",
  "graphify-core",
  "graphify-llm",
+ "graphify-memory",
  "petgraph",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "graphify-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "fastembed",
+ "graphify-core",
+ "ort",
+ "qdrant-client",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
 ]

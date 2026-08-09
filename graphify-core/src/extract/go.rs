@@ -1,6 +1,6 @@
-use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType};
+use crate::types::{Edge, ExtractionResult, FileType, Node, NodeId};
 use anyhow::{Result, anyhow};
-use tree_sitter::{Parser, Node as TSNode};
+use tree_sitter::{Node as TSNode, Parser};
 
 pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     let mut parser = Parser::new();
@@ -33,7 +33,14 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     });
 
     let source_bytes = content.as_bytes();
-    traverse_tree(tree.root_node(), source_bytes, file_path, &module_id, &mut nodes, &mut edges)?;
+    traverse_tree(
+        tree.root_node(),
+        source_bytes,
+        file_path,
+        &module_id,
+        &mut nodes,
+        &mut edges,
+    )?;
 
     Ok(ExtractionResult { nodes, edges })
 }
@@ -84,7 +91,9 @@ fn traverse_tree(
             }
             "function_declaration" => {
                 if let Some(name_node) = current.child_by_field_name("name") {
-                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                    let name = name_node
+                        .utf8_text(source_bytes)
+                        .unwrap_or("UnknownFunction");
                     let node_id = NodeId(format!("{file_path}:function:{name}"));
                     let start_line = current.start_position().row + 1;
                     nodes.push(Node {
@@ -116,7 +125,10 @@ fn traverse_tree(
             }
             "import_declaration" => {
                 let path_str = current.utf8_text(source_bytes).unwrap_or("");
-                let cleaned = path_str.trim_start_matches("import ").trim_end_matches(';').to_string();
+                let cleaned = path_str
+                    .trim_start_matches("import ")
+                    .trim_end_matches(';')
+                    .to_string();
                 let target_id = NodeId(format!("import:{cleaned}"));
                 let start_line = current.start_position().row + 1;
                 edges.push(Edge {
@@ -172,7 +184,13 @@ fn traverse_tree(
     Ok(())
 }
 
-fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &NodeId, edges: &mut Vec<Edge>) {
+fn find_calls(
+    node: TSNode,
+    source_bytes: &[u8],
+    file_path: &str,
+    caller_id: &NodeId,
+    edges: &mut Vec<Edge>,
+) {
     let mut cursor = node.walk();
     let mut stack = vec![node];
 

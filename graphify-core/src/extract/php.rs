@@ -3,9 +3,9 @@
 // ponytail: allow collapsible_if for cleaner matching of AST node patterns
 #![allow(clippy::collapsible_if)]
 
-use crate::types::{Node, Edge, ExtractionResult, NodeId, FileType};
+use crate::types::{Edge, ExtractionResult, FileType, Node, NodeId};
 use anyhow::{Result, anyhow};
-use tree_sitter::{Parser, Node as TSNode};
+use tree_sitter::{Node as TSNode, Parser};
 
 pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     let mut parser = Parser::new();
@@ -38,7 +38,14 @@ pub fn extract(content: &str, file_path: &str) -> Result<ExtractionResult> {
     });
 
     let source_bytes = content.as_bytes();
-    traverse_tree(tree.root_node(), source_bytes, file_path, &module_id, &mut nodes, &mut edges)?;
+    traverse_tree(
+        tree.root_node(),
+        source_bytes,
+        file_path,
+        &module_id,
+        &mut nodes,
+        &mut edges,
+    )?;
 
     Ok(ExtractionResult { nodes, edges })
 }
@@ -123,7 +130,9 @@ fn traverse_tree(
             }
             "function_declaration" => {
                 if let Some(name_node) = current.child_by_field_name("name") {
-                    let name = name_node.utf8_text(source_bytes).unwrap_or("UnknownFunction");
+                    let name = name_node
+                        .utf8_text(source_bytes)
+                        .unwrap_or("UnknownFunction");
                     let node_id = NodeId(format!("{file_path}:function:{name}"));
                     let start_line = current.start_position().row + 1;
                     nodes.push(Node {
@@ -198,7 +207,13 @@ fn traverse_tree(
     Ok(())
 }
 
-fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &NodeId, edges: &mut Vec<Edge>) {
+fn find_calls(
+    node: TSNode,
+    source_bytes: &[u8],
+    file_path: &str,
+    caller_id: &NodeId,
+    edges: &mut Vec<Edge>,
+) {
     let mut cursor = node.walk();
     let mut stack = vec![node];
 
@@ -206,7 +221,11 @@ fn find_calls(node: TSNode, source_bytes: &[u8], file_path: &str, caller_id: &No
         if current.kind() == "function_call_expression" {
             if let Some(function_node) = current.child_by_field_name("function") {
                 let name = function_node.utf8_text(source_bytes).unwrap_or("");
-                if !name.is_empty() && !name.contains('$') && !name.contains("->") && !name.contains("::") {
+                if !name.is_empty()
+                    && !name.contains('$')
+                    && !name.contains("->")
+                    && !name.contains("::")
+                {
                     let start_line = current.start_position().row + 1;
                     edges.push(Edge {
                         source: caller_id.clone(),

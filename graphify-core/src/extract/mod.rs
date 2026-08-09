@@ -1,23 +1,24 @@
 use crate::types::ExtractionResult;
-use std::path::Path;
 use anyhow::{Result, anyhow};
 use std::fs;
+use std::path::Path;
 
-pub mod python;
-pub mod rust;
-pub mod go;
-pub mod javascript;
 pub mod c;
 pub mod cpp;
-pub mod php;
+pub mod go;
 pub mod java;
+pub mod javascript;
+pub mod php;
+pub mod python;
+pub mod rust;
 pub mod swift;
 
 #[cfg(test)]
 mod tests;
 
 pub fn extract_file(path: &Path) -> Result<ExtractionResult> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();

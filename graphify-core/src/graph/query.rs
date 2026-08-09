@@ -1,10 +1,10 @@
-use crate::types::{Node, Edge, GraphOutput, NodeId};
-use petgraph::graph::DiGraph;
-use petgraph::visit::EdgeRef;
-use petgraph::Direction;
-use std::collections::{HashSet, VecDeque, HashMap};
-use petgraph::graph::NodeIndex;
+use crate::types::{Edge, GraphOutput, Node, NodeId};
 use anyhow::{Result, anyhow};
+use petgraph::Direction;
+use petgraph::graph::DiGraph;
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub fn query_bfs(
     graph: &DiGraph<Node, Edge>,
@@ -12,7 +12,8 @@ pub fn query_bfs(
     start_node: &NodeId,
     max_depth: usize,
 ) -> Result<GraphOutput> {
-    let start_idx = node_map.get(start_node)
+    let start_idx = node_map
+        .get(start_node)
         .ok_or_else(|| anyhow!("Node not found: {:?}", start_node))?;
 
     let mut visited_nodes = HashSet::new();
@@ -74,6 +75,7 @@ pub fn query_bfs(
             languages: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            ..Default::default()
         },
     })
 }

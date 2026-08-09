@@ -3,8 +3,8 @@ use crate::gbnf::get_json_schema_gbnf;
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct AutoRotatePipeline {
     config: LLMConfig,
@@ -46,13 +46,19 @@ impl AutoRotatePipeline {
             let keys: Vec<String> = if !self.config.api_keys.is_empty() {
                 self.config.api_keys.clone()
             } else if let Some(ref k) = provider.api_key {
-                k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                k.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
             } else {
                 Vec::new()
             };
 
             if provider.r#type != ProviderType::Ollama && keys.is_empty() {
-                last_err = anyhow!("Provider {} requires an API key but none was supplied", provider.name);
+                last_err = anyhow!(
+                    "Provider {} requires an API key but none was supplied",
+                    provider.name
+                );
                 continue;
             }
 
@@ -78,7 +84,9 @@ impl AutoRotatePipeline {
                         let is_429 = e.downcast_ref::<reqwest::Error>().map_or_else(
                             || {
                                 let err_msg = e.to_string().to_lowercase();
-                                err_msg.contains("429") || err_msg.contains("resource_exhausted") || err_msg.contains("too many requests")
+                                err_msg.contains("429")
+                                    || err_msg.contains("resource_exhausted")
+                                    || err_msg.contains("too many requests")
                             },
                             |req_err| req_err.status().map(|s| s.as_u16()) == Some(429),
                         );
@@ -108,10 +116,18 @@ impl AutoRotatePipeline {
             }
         }
 
-        Err(anyhow!("LLM Pipeline failed after trying all providers. Last error: {}", last_err))
+        Err(anyhow!(
+            "LLM Pipeline failed after trying all providers. Last error: {}",
+            last_err
+        ))
     }
 
-    async fn try_provider(&self, provider: &Provider, api_key: Option<&str>, prompt: &str) -> Result<String> {
+    async fn try_provider(
+        &self,
+        provider: &Provider,
+        api_key: Option<&str>,
+        prompt: &str,
+    ) -> Result<String> {
         match provider.r#type {
             ProviderType::Ollama => {
                 let url = format!("{}/api/generation", provider.endpoint.trim_end_matches('/'));
@@ -122,10 +138,7 @@ impl AutoRotatePipeline {
                     "grammar": get_json_schema_gbnf()
                 });
 
-                let res = self.client.post(&url)
-                    .json(&payload)
-                    .send()
-                    .await?;
+                let res = self.client.post(&url).json(&payload).send().await?;
                 let res = res.error_for_status()?;
 
                 let body: Value = res.json().await?;
@@ -135,8 +148,7 @@ impl AutoRotatePipeline {
                     .ok_or_else(|| anyhow!("Ollama missing response body field"))
             }
             ProviderType::Gemini => {
-                let key = api_key
-                    .ok_or_else(|| anyhow!("Gemini provider requires api_key"))?;
+                let key = api_key.ok_or_else(|| anyhow!("Gemini provider requires api_key"))?;
                 let url = format!(
                     "{}/v1beta/models/{}:generateContent?key={}",
                     if provider.endpoint.is_empty() {
@@ -154,10 +166,7 @@ impl AutoRotatePipeline {
                     }]
                 });
 
-                let res = self.client.post(&url)
-                    .json(&payload)
-                    .send()
-                    .await?;
+                let res = self.client.post(&url).json(&payload).send().await?;
                 let res = res.error_for_status()?;
 
                 let body: Value = res.json().await?;
@@ -167,27 +176,30 @@ impl AutoRotatePipeline {
                     .ok_or_else(|| anyhow!("Gemini response structural mismatch"))
             }
             ProviderType::OpenRouter | ProviderType::OpenAI => {
-                let key = api_key
-                    .ok_or_else(|| anyhow!("Provider requires api_key"))?;
-                
+                let key = api_key.ok_or_else(|| anyhow!("Provider requires api_key"))?;
+
                 let default_base = match provider.r#type {
                     ProviderType::OpenRouter => "https://openrouter.ai/api",
                     _ => "https://api.openai.com",
                 };
-                
+
                 let base_url = if provider.endpoint.is_empty() {
                     default_base
                 } else {
                     provider.endpoint.trim_end_matches('/')
                 };
 
-                let url = if provider.r#type == ProviderType::OpenRouter && provider.endpoint.is_empty() {
+                let url = if provider.r#type == ProviderType::OpenRouter
+                    && provider.endpoint.is_empty()
+                {
                     format!("{}/v1/chat/completions", base_url)
                 } else {
                     format!("{}/chat/completions", base_url)
                 };
-                
-                let res = self.client.post(&url)
+
+                let res = self
+                    .client
+                    .post(&url)
                     .header("Authorization", format!("Bearer {}", key))
                     .header("HTTP-Referer", "https://github.com/cawa0505/graphify-rust")
                     .json(&serde_json::json!({
@@ -211,18 +223,18 @@ impl AutoRotatePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Provider, ProviderType, ExtractionConfig, MemoryConfig};
-    use tokio::net::TcpListener;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use crate::config::{ExtractionConfig, MemoryConfig, Provider, ProviderType};
     use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[allow(clippy::too_many_lines)] // ponytail: mock server matches multiple HTTP routes in one loop, acceptable length for test helper
     async fn run_mock_server() -> Result<(String, tokio::task::JoinHandle<()>, Arc<AtomicU32>)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let url = format!("http://127.0.0.1:{}", addr.port());
-        
+
         let req_count = Arc::new(AtomicU32::new(0));
         let req_count_clone = req_count.clone();
 
@@ -234,10 +246,11 @@ mod tests {
                     if let Ok(n) = socket.read(&mut buf).await {
                         let req_str = String::from_utf8_lossy(&buf[..n]);
                         req_count.fetch_add(1, Ordering::SeqCst);
-                        
+
                         if req_str.contains("key=badkey") {
                             // Respond with HTTP 429
-                            let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n";
+                            let response =
+                                "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n";
                             let _ = socket.write_all(response.as_bytes()).await;
                         } else if req_str.contains("api/embeddings") {
                             // Ollama embeddings mock
@@ -357,7 +370,7 @@ mod tests {
 
         let pipeline = AutoRotatePipeline::new(config);
         let res = pipeline.extract_semantic_link("hello").await?;
-        
+
         assert_eq!(res, "{\"links\": []}");
         // First try (badkey) -> 429, Second try (goodkey) -> 200. Total 2 requests.
         assert_eq!(req_count.load(Ordering::SeqCst), 2);
@@ -443,13 +456,22 @@ mod tests {
                         grpc: false,
                         indexing_threshold: 20000,
                     },
-                    index_kinds: vec!["module".to_string(), "class".to_string(), "struct".to_string(), "trait".to_string(), "interface".to_string()],
+                    index_kinds: vec![
+                        "module".to_string(),
+                        "class".to_string(),
+                        "struct".to_string(),
+                        "trait".to_string(),
+                        "interface".to_string(),
+                    ],
                 },
             },
         };
 
-        let store = crate::memory::QdrantMemoryStore::new(config);
-        
+        let store = graphify_memory::QdrantMemoryStore::new(
+            config.memory.long_term.clone(),
+            config.extraction.concurrency,
+        );
+
         // 1. Ensure collection check/create
         store.ensure_collection().await?;
 
@@ -467,7 +489,7 @@ mod tests {
             description: Some("Desc text".to_string()),
             metadata: None,
         }];
-        store.upsert_nodes(&nodes).await?;
+        store.upsert_nodes(&nodes, "test-workspace").await?;
 
         // 3. Query similar nodes
         let results = store.query_similar_nodes("query", 5, None).await?;
@@ -488,15 +510,18 @@ mod tests {
         }
         let config_str = std::fs::read_to_string(config_path)?;
         let mut config: crate::config::LLMConfig = toml::from_str(&config_str)?;
-        
+
         // Force-enable for integration test
         config.memory.long_term.enabled = true;
 
-        let store = crate::memory::QdrantMemoryStore::new(config);
-        
+        let store = graphify_memory::QdrantMemoryStore::new(
+            config.memory.long_term.clone(),
+            config.extraction.concurrency,
+        );
+
         println!("Checking real homelab connection and collection auto-creation...");
         store.ensure_collection().await?;
-        
+
         println!("Embedding dummy node via Ollama and upserting into Qdrant...");
         let nodes = vec![graphify_core::Node {
             id: graphify_core::NodeId("test_real_node".to_string()),
@@ -511,12 +536,14 @@ mod tests {
             description: Some("Provides physical validation of local network setup".to_string()),
             metadata: None,
         }];
-        store.upsert_nodes(&nodes).await?;
-        
+        store.upsert_nodes(&nodes, "test-workspace").await?;
+
         println!("Performing semantic query against Qdrant...");
-        let results = store.query_similar_nodes("physical validation", 5, None).await?;
+        let results = store
+            .query_similar_nodes("physical validation", 5, None)
+            .await?;
         println!("Real search results returned: {} items", results.len());
-        
+
         Ok(())
     }
 }

@@ -1,0 +1,32 @@
+[package]
+name = "graphify-memory"
+version = "0.1.0"
+edition = "2024"
+description = "Graphify long-term memory: vector store (Qdrant) + embedding infrastructure"
+
+[dependencies]
+graphify-core = { path = "../graphify-core" }
+
+# Async / HTTP
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+dirs = "6.0"
+
+# Local-first high performance ONNX Embedding
+fastembed = { version = "5.17", default-features = false, features = ["hf-hub"] }
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
+qdrant-client = { version = "1.19", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[lints]
+workspace = true

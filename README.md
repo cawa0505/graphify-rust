@@ -16,7 +16,7 @@ Detailed system architecture, command specifications, and integration guides hav
 *   **[Core Engine](docs/core.md)**: Deep dive into Tree-sitter AST parsing, petgraph pre-allocation optimizations, and the `.toon` serialization logic which saves 60% in token overhead.
 *   **[LLM & Memory Pipeline](docs/llm.md)**: Explaining the lock-free thread-safe `AtomicUsize` multi-key rotation, 429 rate limit tolerance, backup provider failover, and local Qdrant vector store implementation.
 *   **[MCP Server Spec](docs/mcp.md)**: Detailing how the graph and semantic RAG search capabilities (Summary, Query Node, Path, Reindex) integrate with AI development environments.
-*   **[Plugin System](docs/plugin_system.md)**: Architecture blueprint for the micro-kernel plugin ecosystem (`review` / `handoff` / `opendoc`) plus the v1 `GraphifyPlugin` trait contract (`workspace_uuid` routing, `.toon` sync).
+*   **[Plugin System](docs/plugin_system.md)**: Architecture blueprint for the micro-kernel plugin ecosystem (`review` / `handoff` / `opendoc`) plus the v1 `GraphifyPlugin` trait contract (`workspace_key` routing, `.toon` sync).
 
 ---
 

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "graphify-core",
+    "graphify-memory",
     "graphify-llm",
     "graphify-mcp",
     "graphify-cli",

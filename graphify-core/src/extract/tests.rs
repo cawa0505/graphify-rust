@@ -41,13 +41,28 @@ mod tests {
         std::fs::rename(&path, &java_path)?;
 
         let result = extract_file(&java_path)?;
-        
+
         // Assertions
         assert_eq!(result.nodes[0].language, "java");
-        assert!(result.nodes.iter().any(|n| n.kind == "class" && n.label == "Calculator"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "add"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "logInfo"));
-        
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "class" && n.label == "Calculator")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "add")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "logInfo")
+        );
+
         // Check for contains edges
         assert!(result.edges.iter().any(|e| e.relation == "contains"));
 
@@ -86,14 +101,32 @@ mod tests {
 
         // Print nodes for debugging
         for n in &result.nodes {
-            println!("Node: id={}, label={}, kind={}, language={}", n.id.0, n.label, n.kind, n.language);
+            println!(
+                "Node: id={}, label={}, kind={}, language={}",
+                n.id.0, n.label, n.kind, n.language
+            );
         }
 
         // Assertions
         assert_eq!(result.nodes[0].language, "swift");
-        assert!(result.nodes.iter().any(|n| n.kind == "class" && n.label == "UserProfile"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "init"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "setupProfile"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "class" && n.label == "UserProfile")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "init")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "setupProfile")
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(swift_path);

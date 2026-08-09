@@ -3,8 +3,9 @@
 // ponytail: allow uninlined format args to support legacy python-compatible style
 #![allow(clippy::uninlined_format_args)]
 
-use crate::types::{FileType, GraphMetadata, GraphOutput, Node, NodeId, Edge};
+use crate::types::{Edge, FileType, GraphMetadata, GraphOutput, Node, NodeId};
 use anyhow::Result;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 /// Helper to escape a string for TOON format.
@@ -125,23 +126,49 @@ pub fn to_toon(graph: &GraphOutput) -> String {
 
     // 1. Metadata
     out.push_str("metadata:\n");
-    let _ = writeln!(out, "  version: {}", escape_string(&graph.metadata.version, false));
-    let _ = writeln!(out, "  generated_at: {}", escape_string(&graph.metadata.generated_at, false));
+    let _ = writeln!(
+        out,
+        "  version: {}",
+        escape_string(&graph.metadata.version, false)
+    );
+    let _ = writeln!(
+        out,
+        "  generated_at: {}",
+        escape_string(&graph.metadata.generated_at, false)
+    );
     let _ = writeln!(out, "  total_nodes: {}", graph.metadata.total_nodes);
     let _ = writeln!(out, "  total_edges: {}", graph.metadata.total_edges);
-    
+
     if graph.metadata.languages.is_empty() {
         out.push_str("  languages[0]:\n");
     } else {
-        let escaped_langs: Vec<String> = graph.metadata.languages.iter().map(|l| escape_string(l, true)).collect();
-        let _ = writeln!(out, "  languages[{}]: {}", escaped_langs.len(), escaped_langs.join(","));
+        let escaped_langs: Vec<String> = graph
+            .metadata
+            .languages
+            .iter()
+            .map(|l| escape_string(l, true))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  languages[{}]: {}",
+            escaped_langs.len(),
+            escaped_langs.join(",")
+        );
     }
     let _ = writeln!(out, "  input_tokens: {}", graph.metadata.input_tokens);
     let _ = writeln!(out, "  output_tokens: {}", graph.metadata.output_tokens);
+    if !graph.metadata.plugin_data.is_empty() {
+        let json = serde_json::to_string(&graph.metadata.plugin_data).unwrap_or_default();
+        let _ = writeln!(out, "  plugin_data: {}", escape_string(&json, false));
+    }
     out.push('\n');
 
     // 2. Nodes
-    let _ = writeln!(out, "nodes[{},]{{id,label,file_type,kind,language,source_file,start_line,end_line,doc_comment,description,metadata}}:", graph.nodes.len());
+    let _ = writeln!(
+        out,
+        "nodes[{},]{{id,label,file_type,kind,language,source_file,start_line,end_line,doc_comment,description,metadata}}:",
+        graph.nodes.len()
+    );
     for node in &graph.nodes {
         let file_type_str = match node.file_type {
             FileType::Code => "code",
@@ -151,9 +178,18 @@ pub fn to_toon(graph: &GraphOutput) -> String {
             FileType::Rationale => "rationale",
             FileType::Concept => "concept",
         };
-        let doc_comment_str = node.doc_comment.as_deref().map_or_else(|| "null".to_string(), |s| escape_string(s, true));
-        let description_str = node.description.as_deref().map_or_else(|| "null".to_string(), |s| escape_string(s, true));
-        let metadata_str = node.metadata.as_ref().map_or_else(|| "null".to_string(), |m| escape_string(&serde_json::to_string(m).unwrap_or_default(), true));
+        let doc_comment_str = node
+            .doc_comment
+            .as_deref()
+            .map_or_else(|| "null".to_string(), |s| escape_string(s, true));
+        let description_str = node
+            .description
+            .as_deref()
+            .map_or_else(|| "null".to_string(), |s| escape_string(s, true));
+        let metadata_str = node.metadata.as_ref().map_or_else(
+            || "null".to_string(),
+            |m| escape_string(&serde_json::to_string(m).unwrap_or_default(), true),
+        );
 
         let _ = writeln!(
             out,
@@ -191,10 +227,18 @@ pub fn to_toon(graph: &GraphOutput) -> String {
         }
     }
 
-    let _ = writeln!(out, "edges[{},]{{source,targets,relation,source_file,confidence,source_location,description}}:", groups.len());
+    let _ = writeln!(
+        out,
+        "edges[{},]{{source,targets,relation,source_file,confidence,source_location,description}}:",
+        groups.len()
+    );
     for (key, targets) in &groups {
-        let description_str = key.description.as_deref().map_or_else(|| "null".to_string(), |s| escape_string(s, true));
-        let targets_str = targets.iter()
+        let description_str = key
+            .description
+            .as_deref()
+            .map_or_else(|| "null".to_string(), |s| escape_string(s, true));
+        let targets_str = targets
+            .iter()
             .map(|t| escape_string(&t.0, true))
             .collect::<Vec<_>>()
             .join("|");
@@ -224,6 +268,7 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
     let mut languages = Vec::new();
     let mut input_tokens = 0;
     let mut output_tokens = 0;
+    let mut plugin_data = BTreeMap::new();
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -256,6 +301,10 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
                         "total_edges" => total_edges_meta = v.parse().unwrap_or(0),
                         "input_tokens" => input_tokens = v.parse().unwrap_or(0),
                         "output_tokens" => output_tokens = v.parse().unwrap_or(0),
+                        "plugin_data" => {
+                            plugin_data =
+                                serde_json::from_str(&unescape_string(v)).unwrap_or_default();
+                        }
                         _ if k.starts_with("languages[") && !v.is_empty() => {
                             for lang in split_csv_line(v) {
                                 languages.push(unescape_string(&lang));
@@ -352,7 +401,8 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
                     };
 
                     // Split targets by pipe '|' and unescape each!
-                    let targets: Vec<String> = targets_raw.split('|').map(unescape_string).collect();
+                    let targets: Vec<String> =
+                        targets_raw.split('|').map(unescape_string).collect();
                     for target_str in targets {
                         edges.push(Edge {
                             source: source.clone(),
@@ -380,6 +430,7 @@ pub fn from_toon(toon_str: &str) -> Result<GraphOutput> {
             languages,
             input_tokens,
             output_tokens,
+            plugin_data,
         },
     })
 }
@@ -399,6 +450,7 @@ mod tests {
                 languages: vec!["rust".to_string(), "python".to_string()],
                 input_tokens: 1500,
                 output_tokens: 300,
+                ..Default::default()
             },
             nodes: vec![
                 Node {
@@ -427,7 +479,10 @@ mod tests {
                     description: None,
                     metadata: {
                         let mut meta_map = serde_json::Map::new();
-                        meta_map.insert("key".to_string(), serde_json::Value::String("val".to_string()));
+                        meta_map.insert(
+                            "key".to_string(),
+                            serde_json::Value::String("val".to_string()),
+                        );
                         Some(meta_map)
                     },
                 },
@@ -447,12 +502,27 @@ mod tests {
         let deserialized = from_toon(&serialized)?;
 
         assert_eq!(deserialized.metadata.version, original.metadata.version);
-        assert_eq!(deserialized.metadata.generated_at, original.metadata.generated_at);
-        assert_eq!(deserialized.metadata.total_nodes, original.metadata.total_nodes);
-        assert_eq!(deserialized.metadata.total_edges, original.metadata.total_edges);
+        assert_eq!(
+            deserialized.metadata.generated_at,
+            original.metadata.generated_at
+        );
+        assert_eq!(
+            deserialized.metadata.total_nodes,
+            original.metadata.total_nodes
+        );
+        assert_eq!(
+            deserialized.metadata.total_edges,
+            original.metadata.total_edges
+        );
         assert_eq!(deserialized.metadata.languages, original.metadata.languages);
-        assert_eq!(deserialized.metadata.input_tokens, original.metadata.input_tokens);
-        assert_eq!(deserialized.metadata.output_tokens, original.metadata.output_tokens);
+        assert_eq!(
+            deserialized.metadata.input_tokens,
+            original.metadata.input_tokens
+        );
+        assert_eq!(
+            deserialized.metadata.output_tokens,
+            original.metadata.output_tokens
+        );
 
         assert_eq!(deserialized.nodes.len(), original.nodes.len());
         assert_eq!(deserialized.nodes[0].id, original.nodes[0].id);
@@ -460,11 +530,23 @@ mod tests {
         assert_eq!(deserialized.nodes[0].file_type, original.nodes[0].file_type);
         assert_eq!(deserialized.nodes[0].kind, original.nodes[0].kind);
         assert_eq!(deserialized.nodes[0].language, original.nodes[0].language);
-        assert_eq!(deserialized.nodes[0].source_file, original.nodes[0].source_file);
-        assert_eq!(deserialized.nodes[0].start_line, original.nodes[0].start_line);
+        assert_eq!(
+            deserialized.nodes[0].source_file,
+            original.nodes[0].source_file
+        );
+        assert_eq!(
+            deserialized.nodes[0].start_line,
+            original.nodes[0].start_line
+        );
         assert_eq!(deserialized.nodes[0].end_line, original.nodes[0].end_line);
-        assert_eq!(deserialized.nodes[0].doc_comment, original.nodes[0].doc_comment);
-        assert_eq!(deserialized.nodes[0].description, original.nodes[0].description);
+        assert_eq!(
+            deserialized.nodes[0].doc_comment,
+            original.nodes[0].doc_comment
+        );
+        assert_eq!(
+            deserialized.nodes[0].description,
+            original.nodes[0].description
+        );
         assert_eq!(deserialized.nodes[0].metadata, original.nodes[0].metadata);
 
         assert_eq!(deserialized.nodes[1].metadata, original.nodes[1].metadata);
@@ -473,9 +555,18 @@ mod tests {
         assert_eq!(deserialized.edges[0].source, original.edges[0].source);
         assert_eq!(deserialized.edges[0].target, original.edges[0].target);
         assert_eq!(deserialized.edges[0].relation, original.edges[0].relation);
-        assert_eq!(deserialized.edges[0].confidence, original.edges[0].confidence);
-        assert_eq!(deserialized.edges[0].source_location, original.edges[0].source_location);
-        assert_eq!(deserialized.edges[0].description, original.edges[0].description);
+        assert_eq!(
+            deserialized.edges[0].confidence,
+            original.edges[0].confidence
+        );
+        assert_eq!(
+            deserialized.edges[0].source_location,
+            original.edges[0].source_location
+        );
+        assert_eq!(
+            deserialized.edges[0].description,
+            original.edges[0].description
+        );
 
         Ok(())
     }
@@ -491,6 +582,7 @@ mod tests {
                 languages: vec!["rust".to_string()],
                 input_tokens: 100,
                 output_tokens: 50,
+                ..Default::default()
             },
             nodes: vec![],
             edges: vec![
@@ -525,11 +617,11 @@ mod tests {
         };
 
         let serialized = to_toon(&original);
-        
+
         // Assert that the serialized string contains EXACTLY 1 row of edge table (meaning they were aggregated successfully!)
         // In TOON, there should be a line starting with "  src/app.rs" and containing "src/db.rs|src/cache.rs|src/config.rs"
         assert!(serialized.contains("src/db.rs|src/cache.rs|src/config.rs"));
-        
+
         // Assert that the edge count in the table header is indeed "1"
         assert!(serialized.contains("edges[1,]"));
 
@@ -542,6 +634,81 @@ mod tests {
         assert_eq!(deserialized.edges[1].target.0, "src/cache.rs");
         assert_eq!(deserialized.edges[2].target.0, "src/config.rs");
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_plugin_data_roundtrip_with_versioned_payload() -> Result<()> {
+        let mut plugin_data = BTreeMap::new();
+        plugin_data.insert(
+            "review".to_string(),
+            serde_json::json!({ "schema_version": 1, "finding": "missing doc" }),
+        );
+        plugin_data.insert(
+            "opendoc".to_string(),
+            serde_json::json!({ "schema_version": 2, "chunks": 4 }),
+        );
+        let original = GraphOutput {
+            metadata: GraphMetadata {
+                version: "1.0.0".to_string(),
+                generated_at: "2026-08-05".to_string(),
+                total_nodes: 0,
+                total_edges: 0,
+                languages: vec![],
+                input_tokens: 0,
+                output_tokens: 0,
+                plugin_data,
+            },
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let serialized = to_toon(&original);
+        assert!(serialized.contains("plugin_data:"));
+
+        let deserialized = from_toon(&serialized)?;
+        let Some(review) = deserialized.metadata.plugin_data.get("review") else {
+            anyhow::bail!("review entry preserved");
+        };
+        assert_eq!(review["schema_version"], 1);
+        assert_eq!(
+            deserialized.metadata.plugin_data["opendoc"]["schema_version"],
+            2
+        );
+        assert_eq!(deserialized.metadata.plugin_data.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_plugin_data_absent_tolerated() -> Result<()> {
+        // A legacy .toon without plugin_data must parse with an empty container.
+        let legacy = "metadata:\n  version: \"1\"\n  generated_at: \"0\"\n  total_nodes: 0\n  total_edges: 0\n  languages[0]:\n  input_tokens: 0\n  output_tokens: 0\n\nnodes[0,]{...}\nedges[0,]{...}\n";
+        let parsed = from_toon(legacy)?;
+        assert!(
+            parsed.metadata.plugin_data.is_empty(),
+            "absent plugin_data tolerated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plugin_data_unknown_entries_tolerated() -> Result<()> {
+        // Unknown plugin entries are preserved verbatim, never interpreted.
+        let unknown = "metadata:\n  version: \"1\"\n  generated_at: \"0\"\n  total_nodes: 0\n  total_edges: 0\n  languages[0]:\n  input_tokens: 0\n  output_tokens: 0\n  plugin_data: {\"future_plugin\":{\"schema_version\":9,\"opaque\":true}}\n\nnodes[0,]{...}\nedges[0,]{...}\n";
+        let parsed = from_toon(unknown)?;
+        assert_eq!(
+            parsed.metadata.plugin_data["future_plugin"]["schema_version"],
+            9
+        );
+
+        // And the serialized roundtrip keeps the unknown entry.
+        let serialized = to_toon(&parsed);
+        let reparsed = from_toon(&serialized)?;
+        assert_eq!(
+            reparsed.metadata.plugin_data["future_plugin"]["opaque"],
+            true
+        );
         Ok(())
     }
 }

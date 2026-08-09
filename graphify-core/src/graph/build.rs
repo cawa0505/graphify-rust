@@ -1,9 +1,12 @@
-use crate::types::{Node, Edge, NodeId};
+use crate::types::{Edge, Node, NodeId};
+use anyhow::Result;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
-use anyhow::Result;
 
-pub fn build_graph(nodes: &[Node], edges: &[Edge]) -> Result<(DiGraph<Node, Edge>, HashMap<NodeId, NodeIndex>)> {
+pub fn build_graph(
+    nodes: &[Node],
+    edges: &[Edge],
+) -> Result<(DiGraph<Node, Edge>, HashMap<NodeId, NodeIndex>)> {
     let mut graph = DiGraph::<Node, Edge>::with_capacity(nodes.len(), edges.len());
     let mut node_map = HashMap::new();
 
@@ -15,7 +18,9 @@ pub fn build_graph(nodes: &[Node], edges: &[Edge]) -> Result<(DiGraph<Node, Edge
 
     // 2. Add all edges
     for edge in edges {
-        if let (Some(&source_idx), Some(&target_idx)) = (node_map.get(&edge.source), node_map.get(&edge.target)) {
+        if let (Some(&source_idx), Some(&target_idx)) =
+            (node_map.get(&edge.source), node_map.get(&edge.target))
+        {
             graph.add_edge(source_idx, target_idx, edge.clone());
         }
     }

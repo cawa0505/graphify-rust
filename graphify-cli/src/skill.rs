@@ -31,7 +31,11 @@ pub fn install_skill(global: bool, target_dir: Option<PathBuf>) -> Result<()> {
             cline: true,
             cursor: true,
         };
-        execute_install(global, target_dir.unwrap_or_else(|| PathBuf::from(".")), &targets)
+        execute_install(
+            global,
+            target_dir.unwrap_or_else(|| PathBuf::from(".")),
+            &targets,
+        )
     }
 }
 
@@ -40,8 +44,12 @@ fn run_interactive_install() -> Result<()> {
     println!("====================================\n");
 
     println!("Where do you want to install the Graphify Skill directive?");
-    println!("  \x1B[32m[1]\x1B[0m Current Project Level (.opencode/skills/graphify/SKILL.md, .clinerules, .cursorrules)");
-    println!("  \x1B[32m[2]\x1B[0m User Global Level (~/.config/opencode/skills/graphify/SKILL.md, ~/.cursorrules)");
+    println!(
+        "  \x1B[32m[1]\x1B[0m Current Project Level (.opencode/skills/graphify/SKILL.md, .clinerules, .cursorrules)"
+    );
+    println!(
+        "  \x1B[32m[2]\x1B[0m User Global Level (~/.config/opencode/skills/graphify/SKILL.md, ~/.cursorrules)"
+    );
     println!("  \x1B[32m[3]\x1B[0m Both (Project & Global)");
     print!("\nEnter your choice [1-3, default: 1]: ");
     io::stdout().flush()?;
@@ -49,7 +57,7 @@ fn run_interactive_install() -> Result<()> {
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
     let choice = choice.trim();
-    
+
     let (install_project, install_global) = match choice {
         "2" => (false, true),
         "3" => (true, true),
@@ -91,7 +99,9 @@ fn run_interactive_install() -> Result<()> {
         execute_install(true, PathBuf::from("."), &targets)?;
     }
 
-    println!("\n\x1B[1;32m✔ Skill installed successfully! AI Agents will now prioritize Graphify AST tools over generic grep.\x1B[0m");
+    println!(
+        "\n\x1B[1;32m✔ Skill installed successfully! AI Agents will now prioritize Graphify AST tools over generic grep.\x1B[0m"
+    );
     Ok(())
 }
 
@@ -105,9 +115,16 @@ fn execute_install(global: bool, base_path: PathBuf, targets: &InstallTargets) -
 
     if targets.opencode {
         let opencode_dir = if global {
-            resolved_base.join(".config").join("opencode").join("skills").join("graphify")
+            resolved_base
+                .join(".config")
+                .join("opencode")
+                .join("skills")
+                .join("graphify")
         } else {
-            resolved_base.join(".opencode").join("skills").join("graphify")
+            resolved_base
+                .join(".opencode")
+                .join("skills")
+                .join("graphify")
         };
         fs::create_dir_all(&opencode_dir)
             .with_context(|| format!("Failed to create directory: {}", opencode_dir.display()))?;

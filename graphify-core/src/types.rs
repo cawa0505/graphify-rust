@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
@@ -56,7 +57,7 @@ pub struct Edge {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GraphMetadata {
     pub version: String,
     pub generated_at: String,
@@ -65,6 +66,11 @@ pub struct GraphMetadata {
     pub languages: Vec<String>,
     pub input_tokens: usize,
     pub output_tokens: usize,
+    /// Reserved, versioned container for plugin-owned metadata keyed by
+    /// `plugin_id`. Core never interprets entries; absent or unknown plugins
+    /// are tolerated. Empty when no plugin enrichment is present.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_data: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

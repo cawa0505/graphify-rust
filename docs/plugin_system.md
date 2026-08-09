@@ -23,7 +23,7 @@ Graphify 係基於 16ms 極速靜態 AST 提取、Petgraph 拓撲圖譜與 .toon
 │  - 16ms AST Multi-Language Extractor (Rust, Python, Go, JS, C, PHP.)                                                         │
 │  - Petgraph Topology Engine (BFS/DFS Shortest Path, Call Graph)                                                               │
 │  - Ultra-compact `.toon` Serializer (-60%+ Token Savings)                                                                     │
-│  - Workspace Identity Manager (`workspace_uuid` Generator & Indexer)                                                          │
+│  - Workspace Identity Manager (`workspace_key` Generator & Indexer)                                                          │
 └──────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────┘
                         │
       ┌─────────────────────────────────┼─────────────────────────────────┐
@@ -46,12 +46,12 @@ Graphify 係基於 16ms 極速靜態 AST 提取、Petgraph 拓撲圖譜與 .toon
 
 ### 3.1 Workspace Alignment (鍵值對齊)
 
-為防止多專案與 Monorepo 環境下的向量噪訊與誤判，Graphify Core 在初始化時生成定型之 `workspace_uuid`，並於 Graph Metadata 與 Plugin API 通訊中強制帶入。
+為防止多專案與 Monorepo 環境下的向量噪訊與誤判，Graphify Core 在初始化時生成定型之 `workspace_key`，並於 Graph Metadata 與 Plugin API 通訊中強制帶入。
 
 ```typescript
 // Common Identity Schema
 interface WorkspaceContext {
-  workspace_uuid: string; // e.g., "w-9f8a2b1c-8e7d-4c3b"
+  workspace_key: string; // e.g., "w-9f8a2b1c-8e7d-4c3b"
   workspace_name: string; // e.g., "graphify-monorepo"
   root_path: string;      // e.g., "/Users/dev/projects/graphify"
   timestamp: number;
@@ -66,26 +66,37 @@ interface WorkspaceContext {
 pub trait GraphifyPlugin {
     fn get_id(&self) -> &str;
     fn bind(&mut self, ctx: WorkspaceContext);
-    fn get_workspace_uuid(&self) -> &str;
+    fn get_workspace_key(&self) -> &str;
     fn sync_toon(&mut self, opt_toon: Option<Vec<u8>>) -> Vec<u8>;
 }
 ```
 
 語意：
 - `get_id` — 插件唯一識別碼（如 `"graphify-plugin-handoff"`）。
-- `bind` — 綁定工作區上下文；綁定後 `get_workspace_uuid` 必須回傳與 `ctx.workspace_uuid` 相同值。
-- `get_workspace_uuid` — 路由鑑別外鍵；未 bind 時回傳空字串。
+- `bind` — 綁定工作區上下文；綁定後 `get_workspace_key` 必須回傳與 `ctx.workspace_key` 相同值。
+- `get_workspace_key` — 路由鑑別外鍵；未 bind 時回傳空字串。
 - `sync_toon` — `Some(payload)` 為被動同步（消費外部 .toon），`None` 為主動同步（以綁定上下文自產輸出）；回傳處理後 `Vec<u8>`，不得 panic。
 
 契約零依賴：僅 `std` + `serde`，不引入任何 LLM/HTTP/MCP 型別，維持 `graphify-core` 同步純粹性。reference 實作見 `graphify-core/src/plugin.rs` 測試。
 
-### 3.2 Standard Plugin Communication Protocol
+#### sync_toon 封包契約（v1）
+
+`sync_toon` 交換的是 **.toon 文件本體**（非自訂 envelope）：payload 即 .toon 序列化，版本承載於 metadata 的 `format_version` 鍵。
+
+- **MUST metadata**：`format_version`（封包契約版本，v1 = `"1.0.0"`）、`workspace_key`（路由鍵）。
+- **Optional 承載**：`symbol_nodes`、`graph_topology`，對齊下方 §3.3 Standard Plugin Communication Protocol 的對應視圖；存在與否不得影響封包有效性。
+- **版本政策（semver）**：MAJOR 不符 → 解析端可（MAY）拒絕；MINOR 不符 → 可（MAY）忽略未知欄位；PATCH → 必須（MUST）相容。
+- **錯誤表達**：無法產出有效輸出時，回傳含 `error` metadata 的 .toon（字串描述），不得 panic、不得改簽名。
+
+完整規格：`openspec/changes/plugin-sync-toon-v1/specs/sync-toon-packet/spec.md`。
+
+### 3.3 Standard Plugin Communication Protocol
 
 Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重響應格式：
 
 ```json
 {
-  "workspace_uuid": "w-9f8a2b1c-8e7d-4c3b",
+  "workspace_key": "w-9f8a2b1c-8e7d-4c3b",
   "symbol_nodes": [
     {
       "id": "graphify-core/src/lib.rs:module",
@@ -94,9 +105,38 @@ Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重�
     }
   ],
   "graph_topology": "import:pub use types::{Node, Edge} -> import:pub use extract::extract_file",
-  "toon_payload": "compressed_toon_binary_or_text"
+    "toon_payload": "compressed_toon_binary_or_text"
 }
 ```
+
+### 3.4 子進程 Plugin 主機（graphify-mcp plugin scanning，v1）
+
+第三方 plugin 以獨立 MCP server 子進程形式存在，由 `graphify-mcp` 掃描並聚合。
+
+- **掃描來源**：`~/.config/graphify/config.toml` 的 `[plugins.<id>]` 段（`command` 必填、`args`/`env`/`cwd` 選用）。缺檔或無該段時為空容器，不阻擋 server 啟動（故障隔離）。
+- **進程模型**：啟動時 spawn，JSON-RPC 2.0 over stdio，`Content-Length` framing；`initialize` 握手失敗或逾時的 plugin 標記為 `Failed`，不影響其他 plugin（單一 plugin 失敗隔離）。
+- **工具命名**：聚合工具以 `graphify_plugin_<plugin_id>_<tool_name>` 三段前綴避免命名衝突；`tools/call` 依此前綴路由回對應子進程。
+- **圖更新通知**：`graph_reindex` 工具成功完成後，向所有 `Ready` plugin 子進程廣播 `notifications/graph_updated`（JSON-RPC notification，無回應預期）。
+- **既有工具不變**：內建 `graphify_*` 工具維持原行為，plugin 聚合僅為增量。
+
+### 3.5 Plugin-Domain Memory 邊界（memory-plugin-integration-v1）
+
+Plugin 的長期記憶分三層，`workspace_key` 為跨層路由鍵（見 `docs/architecture-memory-plugin.md`）：
+
+- **Layer 1 核心記憶**（graphify-llm + Qdrant）：由 indexing pipeline 獨佔寫入，plugin 只能透過受限查詢 API（`MemorySearcher`、`graphify_memory_query` 工具）讀取，無法寫入或取得儲存內部型別（point ID、collection 名、credentials）。
+- **Layer 2 Plugin Domain Memory**：每個 plugin 一個獨立 namespace（`graphify_plugin_<plugin_id>`），記錄以版本化 envelope 儲存：
+
+  ```
+  PluginMemoryEnvelope<T> {
+    format_version, workspace_key, plugin_id,
+    record_id, record_kind, created_at, source_refs, payload: T
+  }
+  ```
+
+  系統從 `plugin_id` 衍生實體名稱並驗證；plugin 不得提供原始 collection 名稱或 credentials（`graphify-llm::plugin_memory::plugin_collection_name`）。`HandoffSnapshot` 用可重建的查詢條件（workspace_key + node IDs + source paths）取代 Qdrant point ID。
+- **Layer 3 外部知識**（OpenDoc / GitHub / Linear 等 adapter）：非本架構核心，由各 adapter 管理。
+
+**不可寫核心記憶**：plugin-domain 寫入只允許進 Layer 2 的自身 namespace；核心記憶同步永遠由 indexing pipeline 擁有，不依賴任何 plugin 載入或收到 graph-update 事件。
 
 ## 4. 三大核心 Plugin 詳細設計 (Plugin Specifications)
 
@@ -136,8 +176,8 @@ Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重�
 **問題**：企業專案包含大量 .xlsx (試算表)、.pdf (規格書)、.docx (需求單)，無天然 AST 結構。
 
 **解決方案**：
-1. OpenDocuments MCP 專注處理非結構化文檔解析、Chunking 與 Embedding，並於 Vector DB 強制加上 `workspace_uuid` 標籤。
-2. Graphify OpenDoc Plugin 作為橋樑，向 OpenDocuments 發起帶有 `workspace_uuid` 的語意檢索。
+1. OpenDocuments MCP 專注處理非結構化文檔解析、Chunking 與 Embedding，並於 Vector DB 強制加上 `workspace_key` 標籤。
+2. Graphify OpenDoc Plugin 作為橋樑，向 OpenDocuments 發起帶有 `workspace_key` 的語意檢索。
 3. 從 OpenDocuments 檢索回傳之文檔片段中提取 `linked_symbol`，再由 Graphify 發射 16ms 靜態 Trace，精準補齊代碼實作鏈。
 
 ## 5. 跨模組協同工作流範例 (Workflow Walkthrough)
@@ -151,13 +191,13 @@ Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重�
 ┌─────────────────────────────────────────────────────────┐
 │ 1. Call `graphify-plugin-opendoc`                       │
 │    - Pass: query = "Token 成本計算公式"                  │
-│    - Pass: workspace_uuid = "w-9f8a2b1c"                │
+│    - Pass: workspace_key = "w-9f8a2b1c"                │
 └──────────────────────────┬──────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 2. OpenDocuments Vector MCP                             │
-│    - Filter: workspace_uuid == "w-9f8a2b1c"             │
+│    - Filter: workspace_key == "w-9f8a2b1c"             │
 │    - Search: financial_plan.xlsx (Sheet1, Row 12)       │
 │    - Return: Concept matched, Symbol: "MemoryConfig"    │
 └──────────────────────────┬──────────────────────────────┘
@@ -182,11 +222,11 @@ Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重�
 
 | 階段 | 時程 (週) | 核心 deliverable |
 |---|---|---|
-| Phase 1: Core Interface | Week 1 - 2 | 於 Graphify Core 實作 `workspace_uuid` 產生器，並定義 GraphifyPlugin Rust/MCP Trait。 |
+| Phase 1: Core Interface | Week 1 - 2 | 於 Graphify Core 實作 `workspace_key` 產生器，並定義 GraphifyPlugin Rust/MCP Trait。 |
 | Phase 2: Review & Handoff | Week 3 - 4 | 開發 `graphify-plugin-review` 與 `graphify-plugin-handoff`，支援 .toon 子圖導出。 |
-| Phase 3: OpenDoc Bridge | Week 5 - 6 | 建立 OpenDocuments MCP 協定對接，實現以 `workspace_uuid` 為基礎之多格式 (.xlsx, .pdf) 向量檢索橋樑。 |
+| Phase 3: OpenDoc Bridge | Week 5 - 6 | 建立 OpenDocuments MCP 協定對接，實現以 `workspace_key` 為基礎之多格式 (.xlsx, .pdf) 向量檢索橋樑。 |
 | Phase 4: TUI Integration | Week 7 - 8 | 於 Ratatui TUI 主介面整合 Plugin 狀態檢視、BFS Modal 與 Handoff 快照開關。 |
 
 ## 7. 結論
 
-本規劃書確立了以 Graphify Core 為精準結構基石、OpenDocuments 為語意向量擴充的**解耦架構**。透過 `workspace_uuid` 的硬性隔離與 MCP 協定串聯，Graphify 不再只是一個單機 CLI/TUI 工具，而是成為支援全生命周期 Agentic Workflow（檢索、審查、交接、規格同步）的核心基礎設施（AI Infrastructure）。
+本規劃書確立了以 Graphify Core 為精準結構基石、OpenDocuments 為語意向量擴充的**解耦架構**。透過 `workspace_key` 的硬性隔離與 MCP 協定串聯，Graphify 不再只是一個單機 CLI/TUI 工具，而是成為支援全生命周期 Agentic Workflow（檢索、審查、交接、規格同步）的核心基礎設施（AI Infrastructure）。

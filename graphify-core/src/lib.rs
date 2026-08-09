@@ -12,11 +12,15 @@
 pub mod extract;
 pub mod graph;
 pub mod plugin;
+pub mod plugin_memory;
 pub mod toon;
 pub mod types;
 
 pub use extract::extract_file;
 pub use graph::{build_graph, find_shortest_path, query_bfs};
-pub use plugin::{GraphifyPlugin, WorkspaceContext};
+pub use plugin::{
+    GraphUpdateEvent, GraphUpdateKind, GraphifyPlugin, WorkspaceContext, derive_workspace_key,
+};
+pub use plugin_memory::{HandoffPayload, OpenDocPayload, PluginMemoryEnvelope, ReviewPayload};
 pub use toon::{from_toon, to_toon};
 pub use types::{Edge, ExtractionResult, FileType, GraphMetadata, GraphOutput, Node, NodeId};

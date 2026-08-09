@@ -5,6 +5,8 @@
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::needless_pass_by_value)]
 
+mod memory_query;
+mod plugin_host;
 mod types;
 
 use anyhow::{Result, anyhow};
@@ -13,11 +15,16 @@ use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
 use graphify_core::graph::query::query_bfs;
 use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
+use graphify_llm::config::PluginsConfig;
+use memory_query::MemoryQueryService;
 use petgraph::graph::{DiGraph, NodeIndex};
+use plugin_host::host::PluginHost;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use types::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, PathParams, QueryNodeParams, QueryParams,
@@ -82,6 +89,7 @@ impl GraphState {
                 languages: Vec::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                ..Default::default()
             },
         };
         let (graph, node_map) = build_graph(&graph_data.nodes, &graph_data.edges)?;
@@ -128,6 +136,27 @@ fn main() -> Result<()> {
         }
     }));
 
+    // Plugin declarations are best-effort: a broken config or a failing
+    // plugin process must never prevent the MCP server from starting.
+    let plugin_host = Rc::new(RefCell::new(match PluginsConfig::load() {
+        Ok(config) => PluginHost::scan(&config),
+        Err(e) => {
+            eprintln!("graphify-mcp: failed to load plugin config, starting without plugins: {e}");
+            PluginHost::scan(&PluginsConfig::default())
+        }
+    }));
+
+    // Core-memory bridge is best-effort too: a missing config falls back to
+    // defaults (semantic memory disabled), so graphify_memory_query reports
+    // an explicit unavailable status instead of failing at startup.
+    let memory_query = Rc::new(RefCell::new(match MemoryQueryService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            eprintln!("graphify-mcp: failed to build memory query service: {e}");
+            return Err(e);
+        }
+    }));
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -139,7 +168,12 @@ fn main() -> Result<()> {
 
         match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => {
-                let response = handle_request(request, Arc::clone(&state));
+                let response = handle_request(
+                    request,
+                    Arc::clone(&state),
+                    Rc::clone(&plugin_host),
+                    Rc::clone(&memory_query),
+                );
                 let response_json = serde_json::to_string(&response)?;
                 writeln!(stdout, "{response_json}")?;
                 stdout.flush()?;
@@ -153,7 +187,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_request(request: JsonRpcRequest, state_lock: Arc<RwLock<GraphState>>) -> JsonRpcResponse {
+fn handle_request(
+    request: JsonRpcRequest,
+    state_lock: Arc<RwLock<GraphState>>,
+    plugin_host: Rc<RefCell<PluginHost>>,
+    memory_query: Rc<RefCell<MemoryQueryService>>,
+) -> JsonRpcResponse {
     let method = request.method.as_str();
     match method {
         "initialize" => JsonRpcResponse {
@@ -171,81 +210,112 @@ fn handle_request(request: JsonRpcRequest, state_lock: Arc<RwLock<GraphState>>) 
             })),
             error: None,
         },
-        "tools/list" => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            id: request.id,
-            result: Some(serde_json::json!({
-                "tools": [
-                    {
-                        "name": "graphify_query",
-                        "description": "BFS traversal of the knowledge graph (legacy compatibility)",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "question": { "type": "string" }
-                            },
-                            "required": ["question"]
-                        }
-                    },
-                    {
-                        "name": "graphify_path",
-                        "description": "Find shortest path between two nodes (legacy compatibility)",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "source": { "type": "string" },
-                                "target": { "type": "string" }
-                            },
-                            "required": ["source", "target"]
-                        }
-                    },
-                    {
-                        "name": "graph_summary",
-                        "description": "Get high-level topology summary",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    },
-                    {
-                        "name": "graph_query_node",
-                        "description": "Query nodes by ID with depth",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "node_id": { "type": "string" },
-                                "depth": { "type": "integer", "default": 1 }
-                            },
-                            "required": ["node_id"]
-                        }
-                    },
-                    {
-                        "name": "graph_trace_path",
-                        "description": "Find shortest path between two nodes",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "from": { "type": "string" },
-                                "to": { "type": "string" }
-                            },
-                            "required": ["from", "to"]
-                        }
-                    },
-                    {
-                        "name": "graph_reindex",
-                        "description": "Reindex a file into the graph",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "file_path": { "type": "string" }
-                            },
-                            "required": ["file_path"]
-                        }
+        "tools/list" => {
+            let mut tools = serde_json::json!([
+                {
+                    "name": "graphify_query",
+                    "description": "BFS traversal of the knowledge graph (legacy compatibility)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "question": { "type": "string" }
+                        },
+                        "required": ["question"]
                     }
-                ]
-            })),
-            error: None,
-        },
+                },
+                {
+                    "name": "graphify_path",
+                    "description": "Find shortest path between two nodes (legacy compatibility)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "source": { "type": "string" },
+                            "target": { "type": "string" }
+                        },
+                        "required": ["source", "target"]
+                    }
+                },
+                {
+                    "name": "graph_summary",
+                    "description": "Get high-level topology summary",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "graph_query_node",
+                    "description": "Query nodes by ID with depth",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "node_id": { "type": "string" },
+                            "depth": { "type": "integer", "default": 1 }
+                        },
+                        "required": ["node_id"]
+                    }
+                },
+                {
+                    "name": "graph_trace_path",
+                    "description": "Find shortest path between two nodes",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "from": { "type": "string" },
+                            "to": { "type": "string" }
+                        },
+                        "required": ["from", "to"]
+                    }
+                },
+                {
+                    "name": "graph_reindex",
+                    "description": "Reindex a file into the graph",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": { "type": "string" }
+                        },
+                        "required": ["file_path"]
+                    }
+                },
+                {
+                    "name": "graphify_notify_plugins",
+                    "description": "Manually broadcast a graph_updated notification to all healthy plugin subprocesses (kind: indexed|extracted|manual)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string" }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "graphify_memory_query",
+                    "description": "Bounded, workspace-scoped semantic query over Graphify core memory (read-only; returns explicit unavailable status when semantic memory is off)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "workspace_key": { "type": "string" },
+                            "query": { "type": "string" },
+                            "limit": { "type": "integer", "default": 10 }
+                        },
+                        "required": ["workspace_key", "query"]
+                    }
+                }
+            ]);
+            // A poisoned plugin lock must not hide the built-in tools;
+            // degrade to the base list and let the next call retry.
+            let host = plugin_host.borrow();
+            if let Some(tools) = tools.as_array_mut() {
+                tools.extend(host.list_tools());
+            }
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(serde_json::json!({ "tools": tools })),
+                error: None,
+            }
+        }
         "tools/call" => {
             let params = request.params.clone();
             let tool_name = match params.get("name").and_then(|v| v.as_str()) {
@@ -265,13 +335,112 @@ fn handle_request(request: JsonRpcRequest, state_lock: Arc<RwLock<GraphState>>) 
 
             let tool_arguments = params.get("arguments").cloned().unwrap_or_default();
 
-            match handle_tool_call(tool_name, tool_arguments, state_lock) {
-                Ok(val) => JsonRpcResponse {
+            // This is a built-in gateway tool, not a namespaced plugin tool.
+            if tool_name == "graphify_notify_plugins" {
+                let kind = tool_arguments
+                    .get("kind")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("manual");
+                if !matches!(kind, "indexed" | "extracted" | "manual") {
+                    return JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: "kind must be indexed, extracted, or manual".to_string(),
+                        }),
+                    };
+                }
+                let mut host = plugin_host.borrow_mut();
+                let workspace_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let workspace_key = graphify_core::derive_workspace_key(&workspace_root);
+                host.broadcast_graph_updated(&serde_json::json!({
+                    "kind": kind,
+                    "workspace_key": workspace_key,
+                }));
+                return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,
-                    result: Some(val),
+                    result: Some(serde_json::json!({
+                        "status": "success",
+                        "kind": kind,
+                    })),
                     error: None,
-                },
+                };
+            }
+
+            // Restricted core-memory query (Safe Memory Gateway). Read-only,
+            // workspace-scoped; explicit unavailable status when memory is off.
+            if tool_name == "graphify_memory_query" {
+                let service = memory_query.borrow();
+                return match service.query(&tool_arguments) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(val),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Memory query error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            // Route graphify_plugin_* tools to the plugin host before the
+            // built-in tool matcher, so plugin tools can never shadow core tools.
+            if tool_name.starts_with("graphify_plugin_") {
+                let mut host = plugin_host.borrow_mut();
+                return match host.call_tool(tool_name, &tool_arguments) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(val),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Plugin tool call error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            match handle_tool_call(tool_name, tool_arguments, state_lock) {
+                Ok(val) => {
+                    // After a successful reindex the graph changed: notify
+                    // every ready plugin subprocess (design D5). The payload
+                    // carries the workspace_key routing key so plugins can
+                    // correlate the update with the workspace they were bound
+                    // to; failures are isolated inside the host.
+                    if tool_name == "graph_reindex" {
+                        let mut host = plugin_host.borrow_mut();
+                        let workspace_key = graphify_core::derive_workspace_key(
+                            std::env::current_dir().unwrap_or_default(),
+                        );
+                        host.broadcast_graph_updated(&serde_json::json!({
+                            "kind": "indexed",
+                            "workspace_key": workspace_key,
+                        }));
+                    }
+                    JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(val),
+                        error: None,
+                    }
+                }
                 Err(e) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,
