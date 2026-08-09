@@ -18,6 +18,7 @@ use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use graphify_llm::config::PluginsConfig;
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
+use graphify_plugin_opendoc::OpendocPlugin;
 use memory_query::MemoryQueryService;
 use petgraph::graph::{DiGraph, NodeIndex};
 use plugin_host::host::PluginHost;
@@ -163,6 +164,9 @@ fn main() -> Result<()> {
     // walk-up per PROTOCOL.md); relay* tools answer honestly with a NoRoot
     // error when no relay.json exists, mirroring the legacy plugin behavior.
     let relay = Rc::new(RefCell::new(build_relay_plugin()));
+    // Embedded opendoc plugin: same bind-once / global-registry pattern as
+    // relay; opendoc* tools degrade to empty results when Layer 2 is absent.
+    let opendoc = Rc::new(RefCell::new(build_opendoc_plugin()));
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -185,6 +189,7 @@ fn main() -> Result<()> {
                     Rc::clone(&plugin_host),
                     Rc::clone(&memory_query),
                     Rc::clone(&relay),
+                    Rc::clone(&opendoc),
                 );
                 if is_notification {
                     continue;
@@ -212,12 +217,23 @@ fn build_relay_plugin() -> RelayPlugin {
     plugin
 }
 
+/// Build the embedded opendoc plugin: same registry path pattern as relay
+/// (global `graphify.db`). Layer 2 backend defaults to `NoOp` (no dependency on the `OpenDocuments` crate);
+/// MCP tools below degrade to empty results when no workspace mapping is set.
+fn build_opendoc_plugin() -> OpendocPlugin {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    OpendocPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path())
+        .bind_for_cli(&cwd)
+}
+
 fn handle_request(
     request: JsonRpcRequest,
     state_lock: Arc<RwLock<GraphState>>,
     plugin_host: Rc<RefCell<PluginHost>>,
     memory_query: Rc<RefCell<MemoryQueryService>>,
     relay: Rc<RefCell<RelayPlugin>>,
+    opendoc: Rc<RefCell<OpendocPlugin>>,
 ) -> JsonRpcResponse {
     let method = request.method.as_str();
     match method {
@@ -413,6 +429,41 @@ fn handle_request(
                         },
                         "required": ["file"]
                     }
+                },
+                {
+                    "name": "opendocIndex",
+                    "description": "Index all `.md` spec blocks in the current workspace: parses markdown, extracts `# Symbol:` annotations, persists spec↔symbol hard links into the opendoc_links SQLite registry (Layer 1, no OpenDocuments dependency)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "doc_paths": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Optional explicit doc paths (relative to workspace root); if omitted, all `.md` files under the root are indexed"
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "opendocGetContext",
+                    "description": "Given a code symbol (e.g. `crate::auth::verify_token`), return the spec blocks documenting it (Layer 1 hard-link priority; falls back to Layer 2 vector search only when a workspace mapping is set and a backend is injected)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": { "type": "string" }
+                        },
+                        "required": ["symbol"]
+                    }
+                },
+                {
+                    "name": "opendocAuditDrift",
+                    "description": "Audit doc-side drift: for each indexed spec↔symbol link, re-read the source doc, re-parse the block, and compare its signature (sha1) against the indexed one. Returns per-link status: UpToDate / DocChanged / DocMissing",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
                 }
             ]);
             // A poisoned plugin lock must not hide the built-in tools;
@@ -538,6 +589,34 @@ fn handle_request(
                 };
             }
 
+            // Embedded opendoc tools: the spec↔code link registry is a pure file/SQLite
+            // domain (Layer 1, zero OD dependency); Layer 2 only activates when
+            // both a backend and a workspace mapping are configured.
+            if matches!(tool_name, "opendocIndex" | "opendocGetContext" | "opendocAuditDrift") {
+                let opendoc = opendoc.borrow();
+                return match run_opendoc_tool(tool_name, &tool_arguments, &opendoc) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        // MCP spec: tools/call result must be an object with content
+                        // blocks (the relay* fix from 351d366 carries over here).
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Opendoc tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
             // Route graphify_plugin_* tools to the plugin host before the
             // built-in tool matcher, so plugin tools can never shadow core tools.
             if tool_name.starts_with("graphify_plugin_") {
@@ -627,7 +706,7 @@ fn run_relay_tool(
             role: get_str("role"),
             active_phase: get_str("phase"),
             volatile_state: get_str("volatile"),
-            confidence: args.get("conf").and_then(|v| v.as_f64()),
+            confidence: args.get("conf").and_then(serde_json::Value::as_f64),
             next_session_starter: get_str("next"),
             debt_tag: get_str("debt"),
             kind: get_str("kind"),
@@ -646,6 +725,80 @@ fn run_relay_tool(
         _ => anyhow::bail!("Unsupported relay tool: {name}"),
     };
     Ok(serde_json::Value::String(out))
+}
+
+/// Dispatch one `opendoc*` tool to the embedded opendoc plugin. Returns a
+/// human-readable text rendering (same contract as the relay* tools).
+fn run_opendoc_tool(
+    name: &str,
+    args: &serde_json::Value,
+    opendoc: &OpendocPlugin,
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    match name {
+        "opendocIndex" => {
+            let doc_paths: Vec<String> = args
+                .get("doc_paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let n = if doc_paths.is_empty() {
+                opendoc
+                    .index_all_docs()
+                    .map_err(|e| anyhow!("opendoc index_all_docs: {e}"))?
+            } else {
+                opendoc
+                    .index_doc_paths(&doc_paths)
+                    .map_err(|e| anyhow!("opendoc index_doc_paths: {e}"))?
+            };
+            Ok(format!("[opendoc] indexed: {n} link rows"))
+        }
+        "opendocGetContext" => {
+            let symbol = get_str("symbol")
+                .ok_or_else(|| anyhow!("Missing 'symbol'"))?
+                .to_string();
+            let rows = opendoc
+                .fetch_code_to_doc_context(&symbol)
+                .map_err(|e| anyhow!("opendoc fetch_code_to_doc_context: {e}"))?;
+            if rows.is_empty() {
+                Ok(format!("[opendoc] {symbol}: no spec coverage"))
+            } else {
+                let mut out = format!("[opendoc] {symbol} — {} spec block(s):\n", rows.len());
+                for r in &rows {
+                    let _ = writeln!(
+                        out,
+                        "  {}\t{}\t{}",
+                        r.spec_id, r.doc_path, r.symbol
+                    );
+                }
+                Ok(out)
+            }
+        }
+        "opendocAuditDrift" => {
+            let items = opendoc
+                .audit_drift()
+                .map_err(|e| anyhow!("opendoc audit_drift: {e}"))?;
+            if items.is_empty() {
+                Ok("[opendoc] no indexed links to audit".to_string())
+            } else {
+                let mut out = format!("[opendoc] {} drift item(s):\n", items.len());
+                for item in &items {
+                    let _ = writeln!(
+                        out,
+                        "  {}\t{}\t{}\t{:?}",
+                        item.spec_id, item.symbol, item.doc_path, item.status
+                    );
+                }
+                Ok(out)
+            }
+        }
+        _ => anyhow::bail!("Unsupported opendoc tool: {name}"),
+    }
 }
 
 fn handle_tool_call(

@@ -19,6 +19,7 @@ use graphify_core::{
 };
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
+use graphify_plugin_opendoc::OpendocPlugin;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -110,6 +111,11 @@ enum Commands {
     Handoff {
         #[command(subcommand)]
         command: HandoffCommand,
+    },
+    /// 文件↔程式碼追蹤與 drift 偵測（內嵌 graphify-plugin-opendoc）
+    Opendoc {
+        #[command(subcommand)]
+        command: OpendocCommand,
     },
 }
 
@@ -223,6 +229,41 @@ pub enum SkillCommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum OpendocCommand {
+    /// 全量索引當前 workspace 下所有 `.md` 檔的 spec↔symbol 連結（無參數時）
+    /// 或僅索引顯式指定的 doc 路徑（root 相對路徑，逗號分隔可多個）
+    Index {
+        #[arg(long, value_delimiter = ',')]
+        doc_paths: Vec<String>,
+    },
+    /// doc → code：「改了 docs/auth.md，哪些 symbols 受影響？」
+    TraceDoc {
+        /// doc 路徑（相對於 workspace root）
+        doc_path: String,
+    },
+    /// code → doc：「`crate::auth::verify_token` 由哪份 spec 描述？」
+    TraceCode {
+        /// 完整 qualified symbol，如 `crate::auth::verify_token`
+        symbol: String,
+    },
+    /// doc-side drift 偵測：每個 indexed link 重新讀檔，比對 block signature
+    AuditDrift,
+    /// doc→code drift：spec 宣告的 symbol 在 graph 中找不到（需供給 known symbols）
+    AuditMissing {
+        /// 逗號分隔的已實作 symbol 清單（從 graphify-core 圖譜匯出）
+        #[arg(long, value_delimiter = ',')]
+        symbols: String,
+    },
+    /// 設定 `workspace_key → od_workspace_id` 對映（Layer 2 用；Layer 1 可不設）
+    SetMapping {
+        /// `OpenDocuments` `workspace_id` 字串（非 Graphify 的 hash key）
+        od_workspace_id: String,
+    },
+    /// 顯示已設定的 `od_workspace_id`
+    GetMapping,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -258,6 +299,7 @@ fn main() -> Result<()> {
             WorkspaceCommand::Status { workspace_key } => run_workspace_status(workspace_key)?,
         },
         Commands::Handoff { command } => run_handoff(command)?,
+        Commands::Opendoc { command } => run_opendoc(command)?,
     }
     Ok(())
 }
@@ -752,6 +794,109 @@ fn run_handoff(command: HandoffCommand) -> Result<()> {
         HandoffCommand::Skill { command } => run_skill_command(command)?,
     };
     println!("{out}");
+    Ok(())
+}
+
+/// `graphify opendoc` — 文件↔程式碼追蹤與 drift 偵測（內嵌 graphify-plugin-opendoc）。
+///
+/// 比照 `handoff` 整合模式：cwd 合成 `WorkspaceContext`、全域 graphify.db
+/// 路徑注入。Layer 2 backend 預設為 NoOp（無 OD 依賴）。
+fn run_opendoc(command: OpendocCommand) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let plugin = OpendocPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path())
+        .bind_for_cli(&cwd);
+    match command {
+        OpendocCommand::Index { doc_paths } => {
+            let (n, msg) = if doc_paths.is_empty() {
+                let n = plugin
+                    .index_all_docs()
+                    .map_err(|e| anyhow!("opendoc index_all_docs: {e}"))?;
+                (n, "indexed all docs under workspace root")
+            } else {
+                let n = plugin
+                    .index_doc_paths(&doc_paths)
+                    .map_err(|e| anyhow!("opendoc index_doc_paths: {e}"))?;
+                (n, "indexed explicit doc paths")
+            };
+            println!("[opendoc] {msg}: {n} link rows");
+        }
+        OpendocCommand::TraceDoc { doc_path } => {
+            let rows = plugin
+                .trace_doc_to_code(&doc_path)
+                .map_err(|e| anyhow!("opendoc trace_doc_to_code: {e}"))?;
+            if rows.is_empty() {
+                println!("[opendoc] {doc_path}: no indexed specs");
+            } else {
+                for r in &rows {
+                    println!("{}\t{}\t{}", r.spec_id, r.symbol, r.doc_path);
+                }
+            }
+        }
+        OpendocCommand::TraceCode { symbol } => {
+            let rows = plugin
+                .fetch_code_to_doc_context(&symbol)
+                .map_err(|e| anyhow!("opendoc fetch_code_to_doc_context: {e}"))?;
+            if rows.is_empty() {
+                println!("[opendoc] {symbol}: no spec coverage");
+            } else {
+                for r in &rows {
+                    println!("{}\t{}\t{}", r.spec_id, r.symbol, r.doc_path);
+                }
+            }
+        }
+        OpendocCommand::AuditDrift => {
+            let items = plugin
+                .audit_drift()
+                .map_err(|e| anyhow!("opendoc audit_drift: {e}"))?;
+            if items.is_empty() {
+                println!("[opendoc] no indexed links to audit");
+            } else {
+                for item in &items {
+                    println!(
+                        "{}\t{}\t{}\t{:?}",
+                        item.spec_id, item.symbol, item.doc_path, item.status
+                    );
+                }
+            }
+        }
+        OpendocCommand::AuditMissing { symbols } => {
+            let known: Vec<String> = symbols
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            let items = plugin
+                .audit_code_missing(&known)
+                .map_err(|e| anyhow!("opendoc audit_code_missing: {e}"))?;
+            if items.is_empty() {
+                println!("[opendoc] no doc-declared symbols missing from the graph");
+            } else {
+                for item in &items {
+                    println!(
+                        "{}\t{}\t{}\t{:?}",
+                        item.spec_id, item.symbol, item.doc_path, item.status
+                    );
+                }
+            }
+        }
+        OpendocCommand::SetMapping { od_workspace_id } => {
+            plugin
+                .set_workspace_mapping(&od_workspace_id)
+                .map_err(|e| anyhow!("opendoc set_workspace_mapping: {e}"))?;
+            println!("[opendoc] workspace mapping set → {od_workspace_id}");
+        }
+        OpendocCommand::GetMapping => {
+            let mapping = plugin
+                .get_workspace_mapping()
+                .map_err(|e| anyhow!("opendoc get_workspace_mapping: {e}"))?;
+            match mapping {
+                Some(id) => println!("[opendoc] od_workspace_id = {id}"),
+                None => println!("[opendoc] no workspace mapping set"),
+            }
+        }
+    }
     Ok(())
 }
 
