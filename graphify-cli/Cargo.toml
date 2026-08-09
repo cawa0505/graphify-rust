@@ -12,6 +12,8 @@ graphify-core = { path = "../graphify-core" }
 graphify-memory = { path = "../graphify-memory" }
 graphify-llm = { path = "../graphify-llm" }
 graphify-registry = { path = "../graphify-registry" }
+# 第一方內嵌 plugin（GraphifyPlugins 群組，靜態連結；公開建置需同名相對路徑存在）
+graphify-plugin-handoff = { path = "../../GraphifyPlugins/graphify-plugin-handoff" }
 clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

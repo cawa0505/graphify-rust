@@ -17,6 +17,8 @@ use graphify_core::{
     ExtractionResult, GraphMetadata, GraphOutput, GraphUpdateEvent, GraphUpdateKind, Node, NodeId,
     build_graph, derive_workspace_key, extract_file, find_shortest_path, query_bfs,
 };
+use graphify_plugin_handoff::relay::SaveArgs;
+use graphify_plugin_handoff::RelayPlugin;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -104,6 +106,11 @@ enum Commands {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
+    /// Relay 狀態接力工具（內嵌 graphify-plugin-handoff）
+    Handoff {
+        #[command(subcommand)]
+        command: HandoffCommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -125,6 +132,69 @@ pub enum WorkspaceCommand {
     Status {
         /// Workspace key (defaults to active)
         workspace_key: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum HandoffCommand {
+    /// 建立 relay.json（Code Relay 起點）
+    Init {
+        /// 專案 context 描述
+        project: String,
+        /// template kind: backend | frontend | infra
+        #[arg(short, long)]
+        kind: Option<String>,
+    },
+    /// 儲存目前工作狀態到 relay.json
+    Save {
+        /// 子 repo 名稱（預設：目前目錄 basename）
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        phase: Option<String>,
+        #[arg(long)]
+        volatile: Option<String>,
+        /// 信心度 0..5
+        #[arg(long)]
+        conf: Option<f64>,
+        #[arg(long)]
+        next: Option<String>,
+        #[arg(long)]
+        debt: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// 執行 closing ritual（consistency check + spec sync + commit + snapshot）
+    Close {
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        next: Option<String>,
+    },
+    /// 切換 active baton 到指定 repo
+    Switch {
+        /// 子 repo 名稱
+        repo: String,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// 渲染 RESUME.md 交接文件
+    Resume {
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// 顯示 relay 摘要（repos / active baton / 更新時間）
+    Status,
+    /// 匯入舊專案的 TODO/handoff 文件
+    Add {
+        /// 舊文件路徑
+        file: String,
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -162,6 +232,7 @@ fn main() -> Result<()> {
             WorkspaceCommand::Switch { workspace_key } => run_workspace_switch(&workspace_key)?,
             WorkspaceCommand::Status { workspace_key } => run_workspace_status(workspace_key)?,
         },
+        Commands::Handoff { command } => run_handoff(command)?,
     }
     Ok(())
 }
@@ -608,6 +679,53 @@ fn run_workspace_status(workspace_key: Option<String>) -> Result<()> {
     } else {
         println!("[graphify] No active workspace.");
     }
+    Ok(())
+}
+
+/// 透過內嵌的 handoff plugin 執行 relay* 工具。
+///
+/// 以目前目錄合成 WorkspaceContext 綁定 plugin，並將全域 graphify.db 路徑
+/// （graphify-registry XDG 解析）注入 `.with_registry_path` — relayClose 的
+/// HandoffSnapshot 同步即寫入同一資料庫。
+fn run_handoff(command: HandoffCommand) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let mut plugin =
+        RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    plugin.bind_for_cli(&cwd);
+    let out = match command {
+        HandoffCommand::Init { project, kind } => plugin.relay_init(&project, kind.as_deref())?,
+        HandoffCommand::Save {
+            repo,
+            role,
+            phase,
+            volatile,
+            conf,
+            next,
+            debt,
+            kind,
+        } => plugin.relay_save(SaveArgs {
+            repo: repo.as_deref(),
+            role: role.as_deref(),
+            active_phase: phase.as_deref(),
+            volatile_state: volatile.as_deref(),
+            confidence: conf,
+            next_session_starter: next.as_deref(),
+            debt_tag: debt.as_deref(),
+            kind: kind.as_deref(),
+        })?,
+        HandoffCommand::Close { repo, next } => {
+            plugin.relay_close(repo.as_deref(), next.as_deref())?
+        }
+        HandoffCommand::Switch { repo, kind } => plugin.relay_switch(&repo, kind.as_deref())?,
+        HandoffCommand::Resume { repo, kind } => {
+            plugin.relay_resume(repo.as_deref(), kind.as_deref())?
+        }
+        HandoffCommand::Status => plugin.relay_status()?,
+        HandoffCommand::Add { file, repo } => {
+            plugin.relay_add(Path::new(&file), repo.as_deref())?
+        }
+    };
+    println!("{out}");
     Ok(())
 }
 
