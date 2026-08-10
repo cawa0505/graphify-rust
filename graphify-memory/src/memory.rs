@@ -222,7 +222,8 @@ impl QdrantMemoryStore {
             } else if url.contains(":6333") {
                 url = url.replace(":6333", ":6334");
             }
-            let mut builder = qdrant_client::Qdrant::from_url(&url);
+            let mut builder = qdrant_client::Qdrant::from_url(&url)
+                .skip_compatibility_check(); // Disable version check to avoid errors
             if let Some(ref api_key) = config.qdrant.api_key {
                 builder = builder.api_key(api_key.as_str());
             }

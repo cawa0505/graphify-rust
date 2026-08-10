@@ -44,6 +44,7 @@ impl RehydrateJob {
     pub fn new(local_jsonl_store: Arc<PluginDomainMemory>, server_url: &str) -> Result<Self> {
         let rt = Runtime::new().context("building rehydration runtime")?;
         let server_client = Qdrant::from_url(server_url)
+            .skip_compatibility_check() // Disable version compatibility check
             .build()
             .context("building qdrant client")?;
         Ok(Self {
