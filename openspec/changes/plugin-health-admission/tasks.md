@@ -9,11 +9,13 @@
 
 ## Phase 2 — Circuit Breaker (plugin-circuit-breaker)
 
-- [ ] 2.1 Add `validate_envelope` pure function in graphify-core/src/plugin.rs: checks record_id/workspace_key/plugin_id/payload/created_at presence and types, returns `Result<(), String>`
-- [ ] 2.2 Add `CircuitBreaker` struct in graphify-cli/src/plugin_host.rs: per-(plugin_id, workspace_key) consecutive-failure counter, `record_failure`/`record_success`/`is_bypassed`
-- [ ] 2.3 Rewrite `PluginHost::broadcast` to invoke each hook via `std::thread` + `recv_timeout(500ms)`; count timeout/panic/schema-rejection as failure; on 3rd consecutive failure set status `Quarantined` via registry; skip quarantined plugins entirely
+> **定位修正（2026-08-10）**：熔斷器實作在 `graphify-mcp` 的 subprocess host（真實執行邊界），非 CLI `PluginHost`（生產無 plugin 註冊）。
+
+- [ ] 2.1 Add `validate_envelope` pure function in graphify-core/src/plugin_memory.rs (envelope 型別所在處): checks record_id/workspace_key/plugin_id/payload/created_at presence and types, returns `Result<(), String>`
+- [ ] 2.2 Add `CircuitBreaker` struct in graphify-mcp/src/plugin_host/: per-plugin_id consecutive-failure counter, `record_failure`/`record_success`/`is_bypassed`; host 啟動時讀 registry 將 Quarantined plugin 加入 bypass set
+- [ ] 2.3 Wire breaker into `PluginHost::call_tool` + `broadcast_graph_updated` (graphify-mcp/src/plugin_host/host.rs): count timeout/transport/schema-rejection as failure; on 3rd consecutive failure `set_status(Quarantined)` via registry; skip quarantined plugins entirely
 - [ ] 2.4 Wire `validate_envelope` into the envelope write path (graphify-cli/src/rehydrate.rs) so invalid payloads are dropped with a named warning before any Qdrant write
-- [ ] 2.5 Unit tests: slow hook aborted after 500ms, fast hook unaffected, 3x failure quarantines, success resets counter, quarantined plugin bypassed, invalid envelope dropped with warning
+- [ ] 2.5 Unit tests: tool-call failure counted, success resets counter, 3x failure quarantines (registry verified), quarantined plugin bypassed (tool call + broadcast), invalid envelope dropped with warning
 
 ## Phase 3 — Passive Health Probe (plugin-health-status + CLI)
 

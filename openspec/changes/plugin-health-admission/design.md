@@ -13,12 +13,14 @@
 │ graphify-registry (SQLite)                  │
 │ PluginStatus 四態 + quarantine + probe 結果  │
 └──────────────┬──────────────────────────────┘
-               │ feeds
+               │ feeds (quarantine read/write)
 ┌──────────────▼──────────────────────────────┐
-│ graphify-cli PluginHost (plugin_host.rs)    │
-│ 500ms timeout + schema filter + breaker     │
+│ graphify-mcp PluginHost (plugin_host/)      │
+│ subprocess host: hard timeout + breaker     │
 └─────────────────────────────────────────────┘
 ```
+
+> **定位修正（2026-08-10）**：熔斷器/超時實作在 `graphify-mcp` 的 subprocess host（真實執行邊界），不在 CLI 的 in-process `PluginHost` — 後者在生產路徑從未註冊 plugin（`.register()` 僅測試使用）。CLI `graphify-cli/src/plugin_host.rs` 的 `catch_unwind` 保留不變。
 
 ## Key Decisions
 
@@ -26,33 +28,22 @@
 
 Quarantine 必須跨程序存活（spec: plugin-health-status Scenario: Quarantine survives process restart）。因此失敗計數器是**程序內**的（CircuitBreaker struct），但**狀態**（Quarantined）寫入 SQLite。程序內計數器達 3 → 寫狀態 → 之後的調用直接讀 SQLite 判斷 bypass。
 
-- 計數器：`graphify-cli` 內新 `CircuitBreaker` struct（HashMap<(plugin_id, workspace_key), u32>），`#[derive(Default)]`，無需持久化。
-- 狀態：`graphify-registry::db::PluginStatus` 擴充四態 + `set_status` 既有 API（db.rs:274 已存在）。
+- 計數器：`graphify-mcp` 內新 `CircuitBreaker` struct（HashMap<(plugin_id, workspace_key), u32>），`#[derive(Default)]`，無需持久化。
+- 狀態：`graphify-registry::db::PluginStatus` 四態（Phase 1 已實作）+ `set_status` 既有 API（db.rs:320 已存在）。
+- Host 啟動時：讀 registry，`Quarantined` 的 plugin 直接 bypass（spec: Quarantined plugin is bypassed on startup）。
 
-### D2: 500ms timeout 實作 — 不引入 async runtime
+### D2: 硬超時實作 — 既有 recv_timeout，不新增執行緒
 
-`graphify-core` 禁止 async（AGENTS.md）。`graphify-cli` 內 PluginHost 目前是同步 `broadcast`。方案：**thread + channel + 等待**，每次 hook 呼叫 spawn 一個 `std::thread`，`recv_timeout(500ms)`：
+`graphify-mcp` 的 `PluginProcess::await_response`（process.rs:220）已有 `recv_timeout` 硬超時機制（`PLUGIN_TIMEOUT`，host.rs:14，非零且不可設定為零）。熔斷器在此邊界接入：
 
-```rust
-let (tx, rx) = std::sync::mpsc::channel();
-std::thread::spawn(move || {
-    let result = catch_unwind(AssertUnwindSafe(|| plugin.on_graph_updated(event)));
-    let _ = tx.send(result);
-});
-match rx.recv_timeout(Duration::from_millis(500)) {
-    Ok(Ok(())) => /* success, reset counter */,
-    Ok(Err(panic)) => /* failure: panic */,
-    Err(RecvTimeoutError::Timeout) => /* failure: timeout */,
-}
-```
-
-每 plugin 呼叫 spawn thread 成本約數十 µs，遠低於 500ms ceiling；event 廣播為批次操作，無即時性要求，可接受。`ponytail:` 註記：最省做法是重複用一個 worker thread pool，但 plugin 數少（<10）、呼叫頻率低，每次 spawn 更簡單且無 shared state。
-
-> [待討論] 若未來 plugin 數量大增，可改 thread pool。目前 YAGNI。
+- tool call：`PluginHost::call_tool` 失敗（timeout / transport / dead process）→ `breaker.record_failure(plugin_id, workspace_key)`；成功 → `record_success`。
+- notification：`broadcast_graph_updated` 的 send 失敗（broken pipe）→ `record_failure`。notification 本身 fire-and-forget（無 response 等待），慢 plugin 不會卡住 broadcast — 這比 CLI 同步模型結構上更強，500ms ceiling 已由 subprocess 隔離取代。
+- 達 3 次連續失敗 → `set_status(plugin_id, workspace_key, Quarantined)` + 記憶體 bypass set。
+- `ponytail:` 註記：不引入 thread pool / async runtime — subprocess 本身就是隔離單位，`recv_timeout` 已提供超時。
 
 ### D3: Schema Filter 位置 — plugin 結果寫入前的唯一閘口
 
-envelope 驗證放在 `graphify-cli/src/rehydrate.rs`（PluginDomainMemory 寫入 Qdrant 的既有路徑）與 plugin_host 的結果接收點。驗證器是純函式 `validate_envelope(&PluginMemoryEnvelope) -> Result<(), String>`（檢查 record_id/workspace_key/plugin_id/payload/created_at 非空且型別正確），放 `graphify-core::plugin`（envelope 型別所在處），兩端共用。
+envelope 驗證放在 `graphify-cli/src/rehydrate.rs`（PluginDomainMemory 寫入 Qdrant 的既有路徑，RehydrateJob::push_points / envelope_to_point）。驗證器是純函式 `validate_envelope(&PluginMemoryEnvelope) -> Result<(), String>`（檢查 record_id/workspace_key/plugin_id/payload/created_at 非空且型別正確），放 `graphify-core::plugin_memory`（envelope 型別所在處，非 plugin.rs），兩端共用。
 
 ### D4: TUI 保持簡潔 — workspace selector 不進主迴圈
 
@@ -87,9 +78,11 @@ spec §2.2 拒絕 background polling。探針 = CLI 指令（如 `graphify plugi
 
 | 檔案 | 變更 |
 |------|------|
-| graphify-registry/src/db.rs | PluginStatus 四態、migrate_to_v2、status API 擴充 |
-| graphify-core/src/plugin.rs | validate_envelope 純函式 |
-| graphify-cli/src/plugin_host.rs | 500ms timeout + CircuitBreaker + bypass |
+| graphify-registry/src/db.rs | PluginStatus 四態、migrate_to_v2（Phase 1 已完成 ✅） |
+| graphify-core/src/plugin_memory.rs | validate_envelope 純函式 |
+| graphify-mcp/src/plugin_host/host.rs | CircuitBreaker + call_tool/broadcast 失敗計數 + quarantine bypass |
+| graphify-mcp/src/plugin_host/process.rs | （既有 recv_timeout 即硬超時，無改動） |
+| graphify-mcp/src/main.rs | host 建構注入 registry + workspace_key |
 | graphify-cli/src/main.rs | `plugin health` / `plugin reset` 指令、tui 啟動改 selector |
 | graphify-cli/src/tui.rs | startup selector + plugin panel + [F5] |
 | graphify-cli/src/workspace.rs | workspace list 讀取（既有）+ probe/reset 命令 |
@@ -98,6 +91,6 @@ spec §2.2 拒絕 background polling。探針 = CLI 指令（如 `graphify plugi
 
 ## Risks
 
-- **thread spawn 開銷**：每次 hook 呼叫 spawn thread。影響：僅在 index/extract 完成時 broadcast，頻率低，無感。
-- **CHECK 約束遷移**：SQLite 重建表有風險，需保留舊資料（copy 後驗證 row count）。
+- **計數器僅程序內**：MCP host 重啟後計數歸零（但 Quarantined 狀態跨程序存活，host 啟動時讀 registry 直接 bypass）。
+- **CHECK 約束遷移**：SQLite 重建表有風險，需保留舊資料（copy 後驗證 row count）— Phase 1 已驗證。
 - **Degraded 語意**：bool 探針無法完整表達三態，見 D6 [待討論]。
