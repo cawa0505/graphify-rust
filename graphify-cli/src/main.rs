@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
-#[command(name = "graphify", version = "2.0.0-alpha.1", about = "GraphifyRust CLI")]
+#[command(name = "graphify", version = env!("CARGO_PKG_VERSION"), about = "GraphifyRust CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

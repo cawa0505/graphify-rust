@@ -11,13 +11,12 @@
   `graphify-registry`, `graphify-cli`.
 - Version scheme: semver with pre-release markers. The v2.0-alpha milestone is
   `2.0.0-alpha.1`; beta follows as `2.0.0-beta.x`, GA as `2.0.0`.
-- CLI and MCP server **hardcode** the version string in two places — keep them
-  in sync with the crate versions:
-  - `graphify-cli/src/main.rs` — `#[command(version = ...)]`
-  - `graphify-mcp/src/main.rs` — MCP `initialize` `serverInfo.version`
+- CLI and MCP server report their version via `env!("CARGO_PKG_VERSION")`
+  (compile-time from Cargo.toml), so `graphify --version` and the MCP
+  `initialize` `serverInfo.version` always match the crate version automatically.
 - Release tags follow `v<semver>` (e.g. `v2.0.0-alpha.1`).
-- A release commit bumps every crate + both hardcoded strings + `Cargo.lock`
-  in one change.
+- A release commit bumps every crate + `Cargo.lock` in one change; the CLI/MCP
+  version strings derive from the crates and need no manual edit.
 
 ## Mandatory Release Checklist
 

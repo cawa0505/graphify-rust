@@ -311,7 +311,7 @@ fn handle_request(
                 },
                 "serverInfo": {
                     "name": "graphify-mcp",
-                    "version": "2.0.0-alpha.1"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             })),
             error: None,
