@@ -777,7 +777,9 @@ fn handle_request(
                 tool_name,
                 "reviewIngest" | "reviewGetContext" | "reviewResolve" | "reviewSearchCrg"
             ) {
-                if tool_name == "reviewIngest" {
+                // 所有 review 工具都需要 graph 快取做 line→symbol 升維；
+                // 餵 graph 後再進 dispatch（reviewIngest 之外的工具也需圖譜）。
+                let toon_str = {
                     let state = match state_lock.read() {
                         Ok(s) => s,
                         Err(_) => {
@@ -792,10 +794,9 @@ fn handle_request(
                             };
                         }
                     };
-                    let toon_str = graphify_core::to_toon(&state.graph_data);
-                    drop(state);
-                    review.borrow_mut().sync_toon(Some(toon_str.into_bytes()));
-                }
+                    graphify_core::to_toon(&state.graph_data)
+                };
+                review.borrow_mut().sync_toon(Some(toon_str.into_bytes()));
                 let mut review = review.borrow_mut();
                 return match run_review_tool(tool_name, &tool_arguments, &mut review) {
                     Ok(val) => JsonRpcResponse {
