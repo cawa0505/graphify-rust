@@ -1,6 +1,6 @@
 [package]
 name = "graphify-memory"
-version = "0.1.0"
+version = "2.0.0-alpha.1"
 edition = "2024"
 description = "Graphify long-term memory: vector store (Qdrant) + embedding infrastructure"
 

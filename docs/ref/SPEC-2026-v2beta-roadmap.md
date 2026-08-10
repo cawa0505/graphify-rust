@@ -2,6 +2,8 @@
 
 > **Docs/ref 快照聲明**：以下為用戶提供的 v2.0-beta 規格原文，verbatim 保留（docs/ref 規則 #3127）。本文件是**未來願景文件**（Target Release: v2.0-beta），不代表目前已實作之功能。與現況的差異分析見各 OpenSpec change 與 roadmap 文件。
 
+> Note 2026-08-10: v2.0-alpha 的版本策略與 release 流程正式化，見 `docs/release-process.md`（OpenSpec change `release-v2-alpha`）。原始條文未改動。
+
 📄 文件概覽 (Document Overview)
 
 Document ID: SPEC-2026-V2BETA

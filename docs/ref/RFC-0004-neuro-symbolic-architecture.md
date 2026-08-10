@@ -8,6 +8,8 @@ Created: 2026-08-09
 
 Target Release: Graphify v2.0-alpha
 
+> Note 2026-08-10: 版本策略與 release 流程正式化，見 `docs/release-process.md`（OpenSpec change `release-v2-alpha`）。原始條文未改動。
+
 > Amendment 2026-08-09: Section 1.3.1 新增 Local-to-Server 單向 Rehydration 決策（Delta Amendment），補齊雙軌向量存取閉環。原始條文未改動。
 
 ## Executive Summary

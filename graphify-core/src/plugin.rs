@@ -374,7 +374,7 @@ mod tests {
     /// v1.1: the injected callback is stored and can push a payload out to the
     /// host (Dependency Inversion — plugin calls, host forwards).
     #[test]
-    fn notify_callback_pushes_payload_to_host() {
+    fn notify_callback_pushes_payload_to_host() -> Result<(), Box<dyn std::error::Error>> {
         let mut plugin = NotifyingPlugin::default();
         let ctx = WorkspaceContext::new("w-abc", "ws", "/tmp/ws");
         plugin.bind(ctx);
@@ -382,39 +382,48 @@ mod tests {
         let received = std::sync::Arc::new(std::sync::Mutex::new(None));
         let sink = std::sync::Arc::clone(&received);
         plugin.set_notify_callback(Some(Box::new(move |payload| {
-            *sink.lock().expect("sink lock") = Some(payload);
+            if let Ok(mut sink) = sink.lock() {
+                *sink = Some(payload);
+            }
         })));
 
-        let cb = plugin.notify.as_ref().expect("callback stored");
+        let cb = plugin.notify.as_ref().ok_or("callback stored")?;
         cb(serde_json::json!({ "event": "impact_alert", "severity": "high" }));
 
-        let got = received.lock().expect("received lock");
-        let got = got.as_ref().expect("payload received");
-        assert_eq!(got["event"], "impact_alert");
-        assert_eq!(got["severity"], "high");
+        {
+            let guard = received.lock().map_err(|_| "received lock poisoned")?;
+            let got = guard.as_ref().ok_or("payload not received")?;
+            assert_eq!(got["event"], "impact_alert");
+            assert_eq!(got["severity"], "high");
+            drop(guard);
+        }
+        Ok(())
     }
 
     /// v1.1: clearing the callback (None) disables future pushes.
     #[test]
-    fn notify_callback_can_be_cleared() {
+    fn notify_callback_can_be_cleared() -> Result<(), Box<dyn std::error::Error>> {
         let mut plugin = NotifyingPlugin::default();
         plugin.bind(WorkspaceContext::new("w-abc", "ws", "/tmp/ws"));
 
         let count = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let sink = std::sync::Arc::clone(&count);
         plugin.set_notify_callback(Some(Box::new(move |_| {
-            *sink.lock().expect("count lock") += 1;
+            if let Ok(mut sink) = sink.lock() {
+                *sink += 1;
+            }
         })));
 
-        let cb = plugin.notify.as_ref().expect("callback stored");
+        let cb = plugin.notify.as_ref().ok_or("callback stored")?;
         cb(serde_json::Value::Null);
-        assert_eq!(*count.lock().expect("count lock"), 1);
+        assert_eq!(*count.lock().map_err(|_| "count lock poisoned")?, 1);
 
         // Clear: pushes after this are silently dropped.
         plugin.set_notify_callback(None);
         assert!(plugin.notify.is_none());
         let v1_1_cleared = true;
         assert!(v1_1_cleared);
+        Ok(())
     }
 
     /// v1.1: a plugin that never calls `set_notify_callback` still binds and

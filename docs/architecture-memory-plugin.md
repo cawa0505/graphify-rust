@@ -278,7 +278,7 @@ RFC-0004 §1.3 原始構想使用 `Qdrant::from_path` 嵌入式 Local 模式，�
 - **`graphify-mcp` `MemoryQueryService`**：選擇性改用 `init_with_fallback`，
   init 失敗 fallback `new()`（config 關閉時零行為變化）。
 
-E2E 驗證（2026-08-09）：ServerUrl 模式（連真 server 192.168.77.185:6333 →
+E2E 驗證（2026-08-09）：ServerUrl 模式（連真 server <redacted:6333> →
 upsert + rehydrate Synced）+ Local fallback 模式（external 不可達 → 下載 binary
 → spawn 16333 → Local index 成功 → rehydrate probe false → deferred）雙場景通過。
 
