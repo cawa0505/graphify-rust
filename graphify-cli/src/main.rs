@@ -963,6 +963,38 @@ fn build_review_for_cli() -> Result<graphify_plugin_review::ReviewPlugin> {
     Ok(plugin.bind_for_cli(&cwd))
 }
 
+/// 載入 `graphify-out/graph.toon` 餵給 plugin（line→symbol 解析 + Slice 1 drift
+/// detection 都需要最新 graph）。無快取時回傳 None，不視為錯誤。
+fn feed_graph_and_drift(plugin: &mut graphify_plugin_review::ReviewPlugin, cwd: &Path) {
+    let toon_path = cwd.join("graphify-out/graph.toon");
+    if !toon_path.exists() {
+        eprintln!(
+            "[review] note: 無快取 graphify-out/graph.toon；先跑 `graphify graph` \
+             才能做 line→symbol 綁定"
+        );
+        return;
+    }
+    match load_graph_output(&toon_path) {
+        Ok(g) => {
+            let s = graphify_core::to_toon(&g);
+            plugin.sync_toon(Some(s.into_bytes()));
+            // Slice 1：presence-diff — 已綁定 review 的節點若不在最新 graph，
+            // 視為已漂移/刪除而自動銷案。kind 用 Manual：diff 只看 node 集合，
+            // 不需要 modified_nodes 清單。
+            let event = graphify_core::GraphUpdateEvent::new(
+                plugin.get_workspace_key(),
+                Vec::new(),
+                graphify_core::GraphUpdateKind::Manual,
+            );
+            plugin.on_graph_updated(&event);
+        }
+        Err(e) => eprintln!(
+            "[review] warning: cached graph unreadable ({e}); \
+             ingest 將所有行視為 orphan"
+        ),
+    }
+}
+
 /// `graphify review` — code-review-graph 橋接（內嵌 graphify-plugin-review）。
 fn run_review(command: ReviewCommand) -> Result<()> {
     let mut plugin = build_review_for_cli()?;
@@ -970,28 +1002,7 @@ fn run_review(command: ReviewCommand) -> Result<()> {
     let cwd = std::env::current_dir().context("cwd")?;
     match command {
         ReviewCommand::Ingest { payload } => {
-            // 載入既有 `graphify-out/graph.toon` 快取以供 line→symbol 解析；
-            // 無快取時 ingest 仍會執行，但所有 review 會回報為 orphan。
-            let toon_path = cwd.join("graphify-out/graph.toon");
-            if toon_path.exists() {
-                match load_graph_output(&toon_path) {
-                    Ok(g) => {
-                        let s = graphify_core::to_toon(&g);
-                        plugin.sync_toon(Some(s.into_bytes()));
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[review] warning: cached graph unreadable ({e}); \
-                             ingest 將所有行視為 orphan"
-                        );
-                    }
-                }
-            } else {
-                eprintln!(
-                    "[review] note: 無快取 graphify-out/graph.toon；先跑 `graphify graph` \
-                     再 ingest 才能做 line→symbol 綁定"
-                );
-            }
+            feed_graph_and_drift(&mut plugin, &cwd);
             let (bound, orphan) = plugin
                 .review_ingest_file(&payload)
                 .map_err(|e| anyhow!("review ingest: {e}"))?;
@@ -1001,6 +1012,7 @@ fn run_review(command: ReviewCommand) -> Result<()> {
             );
         }
         ReviewCommand::GetContext { node } => {
+            feed_graph_and_drift(&mut plugin, &cwd);
             let (node_id, rows) = plugin
                 .review_get_context(&key, &node, false)
                 .map_err(|e| anyhow!("review get_context: {e}"))?;
@@ -1016,13 +1028,16 @@ fn run_review(command: ReviewCommand) -> Result<()> {
             }
         }
         ReviewCommand::Resolve { review_id, reason } => {
+            feed_graph_and_drift(&mut plugin, &cwd);
+            let reason = reason.unwrap_or_default();
             let updated = plugin
-                .review_resolve(&key, &review_id)
+                .review_resolve(&key, &review_id, "manual", &reason)
                 .map_err(|e| anyhow!("review resolve: {e}"))?;
             if updated {
-                match reason {
-                    Some(r) => println!("[review] {review_id}: resolved ({r})"),
-                    None => println!("[review] {review_id}: resolved"),
+                if reason.is_empty() {
+                    println!("[review] {review_id}: resolved");
+                } else {
+                    println!("[review] {review_id}: resolved ({reason})");
                 }
             } else {
                 println!("[review] {review_id}: not found");

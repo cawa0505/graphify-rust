@@ -255,14 +255,16 @@ fn build_review_plugin() -> ReviewPlugin {
 }
 
 /// Build the embedded telemetry plugin: same global-registry pattern as
-/// review (telemetry_bindings 在 graphify.db)。Slice 1 起 `DRACO_BASE_URL`
-/// 設定時由 `draco_client` 主動輪詢 Draco MCP；Slice 0 只走檔案型 ingest。
+/// review (`telemetry_bindings` 在 graphify.db）。`DRACO_BASE_URL` 設定時由
+/// `draco_client` 主動輪詢 Draco MCP（`source="draco-mcp"`）；否則走檔案型
+/// ingest（`source="file"`）。
 fn build_telemetry_plugin() -> TelemetryPlugin {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let p = TelemetryPlugin::new().with_registry_path(graphify_registry::registry_db_path());
     p.bind_for_cli(&cwd)
 }
 
+#[allow(clippy::too_many_arguments)] // dispatch hub: 每個 plugin 一個 Rc，新增 plugin 即加一參數
 fn handle_request(
     request: JsonRpcRequest,
     state_lock: Arc<RwLock<GraphState>>,
@@ -531,21 +533,22 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "review_id": { "type": "string" }
+                            "review_id": { "type": "string" },
+                            "reason": { "type": "string" }
                         },
                         "required": ["review_id"]
                     }
                 },
                 {
                     "name": "telemetryIngest",
-                    "description": "Import a telemetry IngestPayload JSON file into the telemetry_bindings registry: each metric is line→symbol resolved against the cached GraphOutput and flagged is_hotspot when p99 > 1000ms or alloc > 5MB (Slice 0 file-based import; source=\"draco-mcp\" 於 Slice 1 由 draco_client 主動輪詢)",
+                    "description": "Import telemetry metrics into the telemetry_bindings registry: each metric is line→symbol (or symbol→node, for Draco) resolved against the cached GraphOutput and flagged is_hotspot when p99 > 500ms or alloc > 5MB (dynamic thresholds, env TELEMETRY_HOTSPOT_P99_MS / TELEMETRY_HOTSPOT_ALLOC_BYTES). source=\"file\" 讀本地 IngestPayload JSON；source=\"draco-mcp\" 主動輪詢 Draco fetch_top_hotspots()（Top 10）",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "source": { "type": "string", "description": "\"file\" (Slice 0) 或 \"draco-mcp\" (Slice 1)" },
-                            "path_or_draco_params": { "type": "string", "description": "source=\"file\" 時為 IngestPayload JSON 檔路徑" }
+                            "source": { "type": "string", "description": "\"file\" 或 \"draco-mcp\"（即時輪詢）" },
+                            "path_or_draco_params": { "type": "string", "description": "source=\"file\" 時為 IngestPayload JSON 檔路徑；source=\"draco-mcp\" 時可省略" }
                         },
-                        "required": ["source", "path_or_draco_params"]
+                        "required": ["source"]
                     }
                 },
                 {
@@ -618,6 +621,21 @@ fn handle_request(
                     "kind": kind,
                     "workspace_key": workspace_key,
                 }));
+                drop(host);
+                // 內嵌 review plugin：同樣餵入新圖並觸發 drift 自動銷案
+                // （broadcast 只涵蓋 host 外部程序，內嵌 Rc 需手動）。
+                if let Ok(state) = state_lock.read() {
+                    let toon_str = graphify_core::to_toon(&state.graph_data);
+                    drop(state);
+                    let mut r = review.borrow_mut();
+                    r.sync_toon(Some(toon_str.into_bytes()));
+                    let event = graphify_core::GraphUpdateEvent::new(
+                        &workspace_key,
+                        Vec::new(),
+                        graphify_core::GraphUpdateKind::Manual,
+                    );
+                    r.on_graph_updated(&event);
+                }
                 return JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,
@@ -765,7 +783,8 @@ fn handle_request(
             // Embedded telemetry tools: Draco Telemetry bridge — same
             // host-responsibility pattern as reviewIngest：telemetryIngest
             // 前先經由 sync_toon 餵入已索引的 GraphOutput，line→symbol
-            // 升維時才有圖譜可對齊。Slice 0 只支援 source="file"。
+            // 升維時才有圖譜可對齊。source="file" 走路徑；source="draco-mcp"
+            // 走 Draco 輪詢（在 run_telemetry_tool 分派）。
             if matches!(tool_name, "telemetryIngest" | "telemetryGetContext") {
                 if tool_name == "telemetryIngest" {
                     let state = match state_lock.read() {
@@ -833,7 +852,7 @@ fn handle_request(
                 };
             }
 
-            match handle_tool_call(tool_name, tool_arguments, state_lock) {
+            match handle_tool_call(tool_name, tool_arguments, state_lock.clone()) {
                 Ok(val) => {
                     // After a successful reindex the graph changed: notify
                     // every ready plugin subprocess (design D5). The payload
@@ -841,10 +860,24 @@ fn handle_request(
                     // correlate the update with the workspace they were bound
                     // to; failures are isolated inside the host.
                     if tool_name == "graph_reindex" {
-                        let mut host = plugin_host.borrow_mut();
                         let workspace_key = graphify_core::derive_workspace_key(
                             std::env::current_dir().unwrap_or_default(),
                         );
+                        // 內嵌 review plugin 不是 host 外部程序：直接在
+                        // reindex 成功後餵入新圖並觸發 drift 自動銷案。
+                        if let Ok(state) = state_lock.read() {
+                            let toon_str = graphify_core::to_toon(&state.graph_data);
+                            drop(state);
+                            let mut r = review.borrow_mut();
+                            r.sync_toon(Some(toon_str.into_bytes()));
+                            let event = graphify_core::GraphUpdateEvent::new(
+                                &workspace_key,
+                                Vec::new(),
+                                graphify_core::GraphUpdateKind::Indexed,
+                            );
+                            r.on_graph_updated(&event);
+                        }
+                        let mut host = plugin_host.borrow_mut();
                         host.broadcast_graph_updated(&serde_json::json!({
                             "kind": "indexed",
                             "workspace_key": workspace_key,
@@ -1035,8 +1068,9 @@ fn run_review_tool(
         }
         "reviewResolve" => {
             let rid = get_str("review_id").ok_or_else(|| anyhow!("Missing 'review_id'"))?;
+            let reason = get_str("reason").unwrap_or_default();
             let updated = review
-                .review_resolve(&wk, rid)
+                .review_resolve(&wk, rid, "manual", reason)
                 .map_err(|e| anyhow!("review resolve: {e}"))?;
             if updated {
                 Ok(format!("[review] {rid}: resolved"))
@@ -1061,26 +1095,39 @@ fn run_telemetry_tool(
     match name {
         "telemetryIngest" => {
             let source = get_str("source").ok_or_else(|| anyhow!("Missing 'source'"))?;
-            let path = get_str("path_or_draco_params")
-                .ok_or_else(|| anyhow!("Missing 'path_or_draco_params'"))?;
-            if source != "file" {
-                anyhow::bail!(
-                    "source={source} not supported in Slice 0 — use \"file\" (draco-mcp 輪詢於 Slice 1)"
-                );
+            match source {
+                "file" => {
+                    let path = get_str("path_or_draco_params")
+                        .ok_or_else(|| anyhow!("Missing 'path_or_draco_params'"))?;
+                    let report = telemetry
+                        .telemetry_ingest_file(Path::new(path))
+                        .map_err(|e| anyhow!("telemetry ingest_file: {e}"))?;
+                    Ok(format!(
+                        "[telemetry] {path}: {} metrics, {} bound, {} orphan, {} hotspot(s)",
+                        report.total, report.bound, report.orphan, report.hotspots
+                    ))
+                }
+                // Slice 1：一鍵同步 Draco Top 10 熱點（server-side 聚合，
+                // 走同一條 ingest 管線）。
+                "draco-mcp" => {
+                    let report = telemetry
+                        .telemetry_ingest_draco(Some(10))
+                        .map_err(|e| anyhow!("telemetry ingest_draco: {e}"))?;
+                    Ok(format!(
+                        "[telemetry] draco-mcp: {} metrics, {} bound, {} orphan, {} hotspot(s)",
+                        report.total, report.bound, report.orphan, report.hotspots
+                    ))
+                }
+                other => {
+                    anyhow::bail!("source={other} not supported — use \"file\" or \"draco-mcp\"");
+                }
             }
-            let report = telemetry
-                .telemetry_ingest_file(Path::new(path))
-                .map_err(|e| anyhow!("telemetry ingest_file: {e}"))?;
-            Ok(format!(
-                "[telemetry] {path}: {} metrics, {} bound, {} orphan, {} hotspot(s)",
-                report.total, report.bound, report.orphan, report.hotspots
-            ))
         }
         "telemetryGetContext" => {
             let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
             let include_radius = args
                 .get("include_impact_radius")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let (_node_id, rows) = telemetry
                 .telemetry_get_context(&wk, node, include_radius)
@@ -1091,15 +1138,18 @@ fn run_telemetry_tool(
                 let mut out = format!("[telemetry] {node} — {} binding(s):\n", rows.len());
                 for b in &rows {
                     let hotspot = if b.is_hotspot { " 🔥" } else { "" };
-                    let _ = writeln!(
-                        out,
-                        "  {}\tp99: {:.1}ms\talloc: {:.1}MB\tcalls/min: {}{}",
-                        b.id,
-                        b.p99_ms,
-                        b.alloc_bytes as f64 / 1048576.0,
-                        b.call_count,
-                        hotspot
-                    );
+                        // ponytail: display-only MB conversion; i64→f64 精確度損失可忽略
+                        #[allow(clippy::cast_precision_loss)]
+                        let alloc_mb = b.alloc_bytes as f64 / 1_048_576.0;
+                        let _ = writeln!(
+                            out,
+                            "  {}\tp99: {:.1}ms\talloc: {:.1}MB\tcalls/min: {}{}",
+                            b.id,
+                            b.p99_ms,
+                            alloc_mb,
+                            b.call_count,
+                            hotspot
+                        );
                 }
                 Ok(out)
             }
