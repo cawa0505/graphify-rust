@@ -565,10 +565,12 @@ fn handle_request(
                 },
                 {
                     "name": "reviewSearchCrg",
-                    "description": "Call CRG detect_changes_tool (CRG_BASE_URL) and bind its top-risk changed functions as review points (line→symbol via cached GraphOutput)",
+                    "description": "Call CRG detect_changes_tool (CRG_BASE_URL) and bind its top-risk changed functions as review points (line→symbol via cached GraphOutput). Optional `base` git ref (default HEAD~1) widens the diff window.",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {},
+                        "properties": {
+                            "base": { "type": "string", "description": "git diff base ref (default HEAD~1)" }
+                        },
                         "required": []
                     }
                 },
@@ -1115,8 +1117,9 @@ fn run_review_tool(
             }
         }
         "reviewSearchCrg" => {
+            let base = get_str("base");
             let (bound, orphan) = review
-                .review_search_crg()
+                .review_search_crg(base)
                 .map_err(|e| anyhow!("review search_crg: {e}"))?;
             Ok(format!("[review] search-crg: {bound} bound, {orphan} orphan"))
         }

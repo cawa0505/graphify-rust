@@ -283,7 +283,11 @@ pub enum ReviewCommand {
     },
     /// 呼叫 CRG `detect_changes_tool`，把 top-10 風險節點對映成
     /// review 點位並綁定（`CRG_BASE_URL` 指定 CRG endpoint）
-    SearchCrg,
+    SearchCrg {
+        /// git diff base ref（預設 HEAD~1；指定更早 commit 可涵蓋更多變更）
+        #[arg(long)]
+        base: Option<String>,
+    },
     /// 查詢某 canonical node id 關聯的未解決 review
     GetContext {
         /// canonical node id（如 `src/auth.rs:function:verify_token`，由 ingest 時綁定）
@@ -1014,10 +1018,10 @@ fn run_review(command: ReviewCommand) -> Result<()> {
                 payload.display()
             );
         }
-        ReviewCommand::SearchCrg => {
+        ReviewCommand::SearchCrg { base } => {
             feed_graph_and_drift(&mut plugin, &cwd);
             let (bound, orphan) = plugin
-                .review_search_crg()
+                .review_search_crg(base.as_deref())
                 .map_err(|e| anyhow!("review search-crg: {e}"))?;
             println!("[review] search-crg: {bound} bound, {orphan} orphan");
         }
