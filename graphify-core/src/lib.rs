@@ -19,7 +19,8 @@ pub mod types;
 pub use extract::extract_file;
 pub use graph::{build_graph, find_shortest_path, query_bfs};
 pub use plugin::{
-    GraphUpdateEvent, GraphUpdateKind, GraphifyPlugin, WorkspaceContext, derive_workspace_key,
+    GraphUpdateEvent, GraphUpdateKind, GraphifyPlugin, NotifyCallback, WorkspaceContext,
+    derive_workspace_key,
 };
 pub use plugin_memory::{
     HandoffPayload, HandoffSnapshot, MemoryQueryCriteria, OpenDocPayload, PluginMemoryEnvelope,

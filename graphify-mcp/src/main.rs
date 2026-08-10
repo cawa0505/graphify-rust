@@ -249,7 +249,13 @@ fn build_opendoc_plugin() -> OpendocPlugin {
 
 fn build_review_plugin() -> ReviewPlugin {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let p = ReviewPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    let mut p = ReviewPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    // v1.1：注入 notify callback（host 控制轉發，Dependency Inversion）。
+    // ponytail: Slice 2 T2.3 把 stderr log 換成真正 MCP notifications/review/impact_alert
+    // 寫入；v1.1 只驗證 channel 通（plugin emit → host 收到）。
+    p.set_notify_callback(Some(Box::new(|payload| {
+        eprintln!("[review:impact] {}", payload);
+    })));
     // Slice 1/2：CRG_MCP_URL 設定時注入即時分析 client（目前保留骨架）。
     p.bind_for_cli(&cwd)
 }

@@ -116,6 +116,14 @@ impl GraphUpdateEvent {
 /// Implementations are expected to be lightweight in-process crates; there is no
 /// dynamic loading or registry in v1. A plugin is bound to exactly one workspace
 /// via [`bind`](GraphifyPlugin::bind) before it is driven.
+///
+/// ## v1.1 extension
+///
+/// [`set_notify_callback`](GraphifyPlugin::set_notify_callback) adds an
+/// optional host-injected push channel (default no-op, so v1 plugins remain
+/// source-compatible). Plugins that produce domain events (e.g. the review
+/// plugin's `ImpactAlert`) call the injected callback with a serialized JSON
+/// payload; the host controls all forwarding.
 pub trait GraphifyPlugin {
     /// Returns the plugin's unique identifier, e.g. `"graphify-plugin-handoff"`.
     fn get_id(&self) -> &str;
@@ -151,7 +159,25 @@ pub trait GraphifyPlugin {
     /// react to code changes override this and are driven by the CLI's
     /// index/extract broadcast or the manual `plugin run-hooks` trigger.
     fn on_graph_updated(&mut self, _event: &GraphUpdateEvent) {}
+
+    /// Sets the host-injected notify callback (v1.1, optional push channel).
+    ///
+    /// The host (e.g. `graphify-mcp`) injects a callback at plugin construction
+    /// time. Plugins that produce domain events call it with a serialized JSON
+    /// payload; the host controls all forwarding (Dependency Inversion — the
+    /// plugin never opens its own event bus or MCP transport).
+    ///
+    /// The default implementation is a no-op, so v1 plugins that predate this
+    /// method remain source-compatible.
+    fn set_notify_callback(&mut self, _cb: Option<NotifyCallback>) {}
 }
+
+/// Host-injected push channel for plugin domain events (v1.1).
+///
+/// The callback receives a serialized JSON payload (the plugin defines the
+/// event schema, e.g. the review plugin's `ImpactAlert`). `Send + Sync` allows
+/// the host to forward from any thread.
+pub type NotifyCallback = Box<dyn Fn(serde_json::Value) + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -312,5 +338,92 @@ mod tests {
         fn sync_toon(&mut self, _opt_toon: Option<Vec<u8>>) -> Vec<u8> {
             Vec::new()
         }
+    }
+
+    /// v1.1: a plugin that stores the injected notify callback and can invoke
+    /// it with a serialized payload, mirroring the review plugin's usage.
+    // `Debug` 不能 derive：`Box<dyn Fn>` 不實作 `Debug`。
+    #[derive(Default)]
+    struct NotifyingPlugin {
+        workspace_key: String,
+        notify: Option<super::NotifyCallback>,
+    }
+
+    impl GraphifyPlugin for NotifyingPlugin {
+        fn get_id(&self) -> &'static str {
+            "graphify-plugin-notifying"
+        }
+
+        fn bind(&mut self, ctx: WorkspaceContext) {
+            self.workspace_key = ctx.workspace_key;
+        }
+
+        fn get_workspace_key(&self) -> &str {
+            &self.workspace_key
+        }
+
+        fn sync_toon(&mut self, _opt_toon: Option<Vec<u8>>) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn set_notify_callback(&mut self, cb: Option<super::NotifyCallback>) {
+            self.notify = cb;
+        }
+    }
+
+    /// v1.1: the injected callback is stored and can push a payload out to the
+    /// host (Dependency Inversion — plugin calls, host forwards).
+    #[test]
+    fn notify_callback_pushes_payload_to_host() {
+        let mut plugin = NotifyingPlugin::default();
+        let ctx = WorkspaceContext::new("w-abc", "ws", "/tmp/ws");
+        plugin.bind(ctx);
+
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&received);
+        plugin.set_notify_callback(Some(Box::new(move |payload| {
+            *sink.lock().expect("sink lock") = Some(payload);
+        })));
+
+        let cb = plugin.notify.as_ref().expect("callback stored");
+        cb(serde_json::json!({ "event": "impact_alert", "severity": "high" }));
+
+        let got = received.lock().expect("received lock");
+        let got = got.as_ref().expect("payload received");
+        assert_eq!(got["event"], "impact_alert");
+        assert_eq!(got["severity"], "high");
+    }
+
+    /// v1.1: clearing the callback (None) disables future pushes.
+    #[test]
+    fn notify_callback_can_be_cleared() {
+        let mut plugin = NotifyingPlugin::default();
+        plugin.bind(WorkspaceContext::new("w-abc", "ws", "/tmp/ws"));
+
+        let count = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let sink = std::sync::Arc::clone(&count);
+        plugin.set_notify_callback(Some(Box::new(move |_| {
+            *sink.lock().expect("count lock") += 1;
+        })));
+
+        let cb = plugin.notify.as_ref().expect("callback stored");
+        cb(serde_json::Value::Null);
+        assert_eq!(*count.lock().expect("count lock"), 1);
+
+        // Clear: pushes after this are silently dropped.
+        plugin.set_notify_callback(None);
+        assert!(plugin.notify.is_none());
+        let v1_1_cleared = true;
+        assert!(v1_1_cleared);
+    }
+
+    /// v1.1: a plugin that never calls `set_notify_callback` still binds and
+    /// syncs — the new method's default no-op keeps v1 source compatibility.
+    #[test]
+    fn v1_plugin_ignores_notify_callback_default() {
+        let mut plugin = LegacyPlugin::default();
+        plugin.bind(WorkspaceContext::new("w-abc", "ws", "/tmp/ws"));
+        plugin.set_notify_callback(None); // default no-op must not panic
+        assert_eq!(plugin.get_workspace_key(), "w-abc");
     }
 }
