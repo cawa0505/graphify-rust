@@ -564,6 +564,15 @@ fn handle_request(
                     }
                 },
                 {
+                    "name": "reviewSearchCrg",
+                    "description": "Call CRG detect_changes_tool (CRG_BASE_URL) and bind its top-risk changed functions as review points (line→symbol via cached GraphOutput)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                {
                     "name": "telemetryIngest",
                     "description": "Import telemetry metrics into the telemetry_bindings registry: each metric is line→symbol (or symbol→node, for Draco) resolved against the cached GraphOutput and flagged is_hotspot when p99 > 500ms or alloc > 5MB (dynamic thresholds, env TELEMETRY_HOTSPOT_P99_MS / TELEMETRY_HOTSPOT_ALLOC_BYTES). source=\"file\" 讀本地 IngestPayload JSON；source=\"draco-mcp\" 主動輪詢 Draco fetch_top_hotspots()（Top 10）",
                     "inputSchema": {
@@ -762,7 +771,10 @@ fn handle_request(
             // Host responsibility (reviewIngest)：將已索引的 GraphOutput
             // 經由 sync_toon 傳入 plugin 記憶體快取，再做 line→symbol
             // 解析；保證 line 升維至 canonical NodeId 時有圖譜可對齊。
-            if matches!(tool_name, "reviewIngest" | "reviewGetContext" | "reviewResolve") {
+            if matches!(
+                tool_name,
+                "reviewIngest" | "reviewGetContext" | "reviewResolve" | "reviewSearchCrg"
+            ) {
                 if tool_name == "reviewIngest" {
                     let state = match state_lock.read() {
                         Ok(s) => s,
@@ -782,8 +794,8 @@ fn handle_request(
                     drop(state);
                     review.borrow_mut().sync_toon(Some(toon_str.into_bytes()));
                 }
-                let review = review.borrow();
-                return match run_review_tool(tool_name, &tool_arguments, &review) {
+                let mut review = review.borrow_mut();
+                return match run_review_tool(tool_name, &tool_arguments, &mut review) {
                     Ok(val) => JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,
@@ -1057,7 +1069,7 @@ fn run_opendoc_tool(
 fn run_review_tool(
     name: &str,
     args: &serde_json::Value,
-    review: &ReviewPlugin,
+    review: &mut ReviewPlugin,
 ) -> Result<String> {
     use std::fmt::Write as _;
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
@@ -1101,6 +1113,12 @@ fn run_review_tool(
             } else {
                 Ok(format!("[review] {rid}: not found"))
             }
+        }
+        "reviewSearchCrg" => {
+            let (bound, orphan) = review
+                .review_search_crg()
+                .map_err(|e| anyhow!("review search_crg: {e}"))?;
+            Ok(format!("[review] search-crg: {bound} bound, {orphan} orphan"))
         }
         _ => anyhow::bail!("Unsupported review tool: {name}"),
     }

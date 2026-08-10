@@ -281,6 +281,9 @@ pub enum ReviewCommand {
         /// `IngestPayload` JSON 檔案路徑
         payload: PathBuf,
     },
+    /// 呼叫 CRG `detect_changes_tool`，把 top-10 風險節點對映成
+    /// review 點位並綁定（`CRG_BASE_URL` 指定 CRG endpoint）
+    SearchCrg,
     /// 查詢某 canonical node id 關聯的未解決 review
     GetContext {
         /// canonical node id（如 `src/auth.rs:function:verify_token`，由 ingest 時綁定）
@@ -1010,6 +1013,13 @@ fn run_review(command: ReviewCommand) -> Result<()> {
                 "[review] {}: {bound} bound, {orphan} orphan lines",
                 payload.display()
             );
+        }
+        ReviewCommand::SearchCrg => {
+            feed_graph_and_drift(&mut plugin, &cwd);
+            let (bound, orphan) = plugin
+                .review_search_crg()
+                .map_err(|e| anyhow!("review search-crg: {e}"))?;
+            println!("[review] search-crg: {bound} bound, {orphan} orphan");
         }
         ReviewCommand::GetContext { node } => {
             feed_graph_and_drift(&mut plugin, &cwd);
