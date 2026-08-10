@@ -173,7 +173,7 @@ mod tests {
         let reg = db
             .get_registration("opendoc", "ws-a")?
             .ok_or_else(|| RegistryError::Schema("missing".into()))?;
-        assert_eq!(reg.status, PluginStatus::Ready);
+        assert_eq!(reg.status, PluginStatus::Healthy);
         assert!(
             reg.last_synced_at > 0,
             "mark_synced advances the checkpoint"

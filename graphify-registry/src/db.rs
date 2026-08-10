@@ -12,7 +12,7 @@ use thiserror::Error;
 use graphify_core::HandoffSnapshot;
 
 /// Current registry schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Handoff snapshot TTL in days (RFC-0004 §5, spec handoff-pruning).
 pub const HANDOFF_TTL_DAYS: i64 = 7;
@@ -30,24 +30,33 @@ pub enum RegistryError {
     Schema(String),
 }
 
-/// Plugin registration status. Two-state only — pending sync is derived from
+/// Plugin registration status. Four-state model (plugin-health-admission
+/// Phase 1): Healthy, Degraded, Unavailable, Quarantined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginStatus {
-    Ready,
+    Healthy,
+    Degraded,
     Unavailable,
+    Quarantined,
 }
 
 impl PluginStatus {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Ready => "Ready",
+            Self::Healthy => "Healthy",
+            Self::Degraded => "Degraded",
             Self::Unavailable => "Unavailable",
+            Self::Quarantined => "Quarantined",
         }
     }
 
     fn from_str(s: &str) -> Self {
         match s {
-            "Ready" => Self::Ready,
+            "Healthy" => Self::Healthy,
+            "Degraded" => Self::Degraded,
+            "Quarantined" => Self::Quarantined,
+            // Unknown/legacy values collapse to Unavailable; the CHECK
+            // constraint prevents them from being written in the first place.
             _ => Self::Unavailable,
         }
     }
@@ -99,7 +108,11 @@ impl RegistryDb {
             .conn
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => self.migrate_to_v1(),
+            0 => {
+                self.migrate_to_v1()?;
+                self.migrate_to_v2()
+            }
+            1 => self.migrate_to_v2(),
             SCHEMA_VERSION => Ok(()),
             other => Err(RegistryError::Schema(format!(
                 "database at version {other}, expected {SCHEMA_VERSION}"
@@ -139,7 +152,40 @@ impl RegistryDb {
             );
             ",
         )?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// v1 → v2: rebuild `plugin_registrations` with the four-state status
+    /// CHECK constraint (plugin-health-admission Phase 1). Existing rows are
+    /// preserved; `'Ready'` maps to `'Healthy'` and `'Unavailable'` stays.
+    fn migrate_to_v2(&self) -> Result<(), RegistryError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "
+            CREATE TABLE plugin_registrations_v2 (
+                plugin_id              TEXT NOT NULL,
+                workspace_key          TEXT NOT NULL,
+                qdrant_collection_name TEXT NOT NULL,
+                last_synced_at         INTEGER NOT NULL DEFAULT 0,
+                status                 TEXT NOT NULL CHECK (status IN
+                    ('Healthy', 'Degraded', 'Unavailable', 'Quarantined')),
+                PRIMARY KEY (plugin_id, workspace_key),
+                FOREIGN KEY (workspace_key) REFERENCES workspaces(workspace_key) ON DELETE CASCADE
+            );
+
+            INSERT INTO plugin_registrations_v2
+                (plugin_id, workspace_key, qdrant_collection_name, last_synced_at, status)
+            SELECT plugin_id, workspace_key, qdrant_collection_name, last_synced_at,
+                   CASE status WHEN 'Ready' THEN 'Healthy' ELSE status END
+            FROM plugin_registrations;
+
+            DROP TABLE plugin_registrations;
+            ALTER TABLE plugin_registrations_v2 RENAME TO plugin_registrations;
+            ",
+        )?;
+        tx.pragma_update(None, "user_version", 2)?;
         tx.commit()?;
         Ok(())
     }
@@ -327,7 +373,7 @@ impl RegistryDb {
     ) -> Result<(), RegistryError> {
         self.conn.execute(
             "UPDATE plugin_registrations
-             SET last_synced_at = ?3, status = 'Ready'
+             SET last_synced_at = ?3, status = 'Healthy'
              WHERE plugin_id = ?1 AND workspace_key = ?2",
             (plugin_id, workspace_key, timestamp),
         )?;
@@ -345,7 +391,8 @@ impl RegistryDb {
     ) -> Result<Vec<PluginRegistrationRow>, RegistryError> {
         let mut stmt = self.conn.prepare(
             "SELECT plugin_id, workspace_key, qdrant_collection_name, last_synced_at, status
-             FROM plugin_registrations WHERE workspace_key = ?1",
+             FROM plugin_registrations WHERE workspace_key = ?1
+             ORDER BY plugin_id",
         )?;
         let rows = stmt.query_map([workspace_key], |row| {
             Ok(PluginRegistrationRow {
@@ -557,10 +604,10 @@ mod tests {
         let reg = unwrap_opt(reg, "registration exists");
         assert_eq!(reg.last_synced_at, 0);
         assert_eq!(reg.status, PluginStatus::Unavailable);
-        db.set_status("opendoc", "ws-a", PluginStatus::Ready)?;
+        db.set_status("opendoc", "ws-a", PluginStatus::Healthy)?;
         let reg = db.get_registration("opendoc", "ws-a")?;
         let reg = unwrap_opt(reg, "registration exists");
-        assert_eq!(reg.status, PluginStatus::Ready);
+        assert_eq!(reg.status, PluginStatus::Healthy);
         Ok(())
     }
 
@@ -573,21 +620,114 @@ mod tests {
         let reg = db.get_registration("opendoc", "ws-a")?;
         let reg = unwrap_opt(reg, "registration exists");
         assert_eq!(reg.last_synced_at, 1_700_000_000);
-        assert_eq!(reg.status, PluginStatus::Ready);
+        assert_eq!(reg.status, PluginStatus::Healthy);
         Ok(())
     }
 
     #[test]
-    fn test_status_check_constraint_rejects_third_state() -> Result<(), RegistryError> {
+    fn test_status_round_trip_all_states() -> Result<(), RegistryError> {
         let (db, _d) = open_temp()?;
         db.upsert_workspace("ws-a", "/tmp/a")?;
         db.upsert_plugin_registration("opendoc", "ws-a", "graphify_plugin_opendoc")?;
+        for status in [
+            PluginStatus::Healthy,
+            PluginStatus::Degraded,
+            PluginStatus::Unavailable,
+            PluginStatus::Quarantined,
+        ] {
+            db.set_status("opendoc", "ws-a", status)?;
+            let reg = db.get_registration("opendoc", "ws-a")?;
+            let reg = unwrap_opt(reg, "registration exists");
+            assert_eq!(reg.status, status);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_unregistered_read_returns_none() -> Result<(), RegistryError> {
+        let (db, _d) = open_temp()?;
+        db.upsert_workspace("ws-a", "/tmp/a")?;
+        assert!(db.get_registration("missing", "ws-a")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_check_constraint_rejects_unknown_state() -> Result<(), RegistryError> {
+        let (db, _d) = open_temp()?;
+        db.upsert_workspace("ws-a", "/tmp/a")?;
+        db.upsert_plugin_registration("opendoc", "ws-a", "graphify_plugin_opendoc")?;
+        // Legacy v1 vocabulary and out-of-vocabulary values must be rejected
+        // by the four-state CHECK.
+        for bad in ["Ready", "SyncPending", "Broken"] {
+            let result = db.conn.execute(
+                "UPDATE plugin_registrations SET status = ?1
+                 WHERE plugin_id = 'opendoc' AND workspace_key = 'ws-a'",
+                [bad],
+            );
+            assert!(result.is_err(), "{bad} must be rejected by CHECK");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_preserves_rows_and_maps_status() -> Result<(), RegistryError> {
+        // Craft a v1 database by hand: v1 schema, one Ready + one Unavailable
+        // registration, then open through RegistryDb to trigger migration.
+        let dir = tempfile::tempdir().map_err(RegistryError::Io)?;
+        let path = dir.path().join("graphify.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            conn.execute_batch(
+                "
+                CREATE TABLE workspaces (
+                    workspace_key  TEXT PRIMARY KEY,
+                    root_path      TEXT NOT NULL,
+                    is_active      INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+                    last_indexed_at INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE plugin_registrations (
+                    plugin_id              TEXT NOT NULL,
+                    workspace_key          TEXT NOT NULL,
+                    qdrant_collection_name TEXT NOT NULL,
+                    last_synced_at         INTEGER NOT NULL DEFAULT 0,
+                    status                 TEXT NOT NULL CHECK (status IN ('Ready', 'Unavailable')),
+                    PRIMARY KEY (plugin_id, workspace_key),
+                    FOREIGN KEY (workspace_key) REFERENCES workspaces(workspace_key) ON DELETE CASCADE
+                );
+                CREATE TABLE handoff_registry (
+                    snapshot_id   TEXT PRIMARY KEY,
+                    session_id    TEXT NOT NULL,
+                    workspace_key TEXT NOT NULL,
+                    created_at    INTEGER NOT NULL,
+                    expires_at    INTEGER NOT NULL,
+                    payload       TEXT NOT NULL,
+                    FOREIGN KEY (workspace_key) REFERENCES workspaces(workspace_key) ON DELETE CASCADE
+                );
+                INSERT INTO workspaces (workspace_key, root_path, is_active) VALUES ('ws-a', '/tmp/a', 1);
+                INSERT INTO plugin_registrations
+                    (plugin_id, workspace_key, qdrant_collection_name, status)
+                    VALUES ('opendoc', 'ws-a', 'graphify_plugin_opendoc', 'Ready'),
+                           ('sdk', 'ws-a', 'graphify_plugin_sdk', 'Unavailable');
+                PRAGMA user_version = 1;
+                ",
+            )?;
+        }
+        let db = RegistryDb::open(&path)?;
+        let regs = db.list_registrations("ws-a")?;
+        assert_eq!(regs.len(), 2, "row count preserved across migration");
+        let opendoc = db.get_registration("opendoc", "ws-a")?;
+        let opendoc = unwrap_opt(opendoc, "opendoc registration exists");
+        assert_eq!(opendoc.status, PluginStatus::Healthy, "Ready maps to Healthy");
+        let sdk = db.get_registration("sdk", "ws-a")?;
+        let sdk = unwrap_opt(sdk, "sdk registration exists");
+        assert_eq!(sdk.status, PluginStatus::Unavailable, "Unavailable stays");
+        // v2 CHECK now active: legacy 'Ready' is rejected.
         let result = db.conn.execute(
-            "UPDATE plugin_registrations SET status = 'SyncPending'
+            "UPDATE plugin_registrations SET status = 'Ready'
              WHERE plugin_id = 'opendoc' AND workspace_key = 'ws-a'",
             [],
         );
-        assert!(result.is_err(), "SyncPending must be rejected by CHECK");
+        assert!(result.is_err(), "Ready must be rejected post-migration");
         Ok(())
     }
 

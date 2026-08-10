@@ -2,10 +2,10 @@
 
 ## Phase 1 — Registry (plugin-health-status)
 
-- [ ] 1.1 Extend `PluginStatus` enum to four states: `Healthy`, `Degraded`, `Unavailable`, `Quarantined` (graphify-registry/src/db.rs:35), updating `as_str`/parsing and the status CHECK constraint vocabulary
-- [ ] 1.2 Add `migrate_to_v2` to `graphify-registry/src/db.rs`: rebuild `plugin_registrations` table with new CHECK constraint, mapping `Ready` → `Healthy`, `Unavailable` → `Unavailable`; bump `SCHEMA_VERSION` to 2; verify row count preserved in test
-- [ ] 1.3 Add registry query API: list all plugin registrations for a workspace with status, ordered by `plugin_id` (for CLI + TUI)
-- [ ] 1.4 Unit tests: status round-trip per (plugin_id, workspace_key), invalid status rejected, migration preserves rows, unregistered read returns nothing
+- [x] 1.1 Extend `PluginStatus` enum to four states: `Healthy`, `Degraded`, `Unavailable`, `Quarantined` (graphify-registry/src/db.rs:35), updating `as_str`/parsing and the status CHECK constraint vocabulary
+- [x] 1.2 Add `migrate_to_v2` to `graphify-registry/src/db.rs`: rebuild `plugin_registrations` table with new CHECK constraint, mapping `Ready` → `Healthy`, `Unavailable` → `Unavailable`; bump `SCHEMA_VERSION` to 2; verify row count preserved in test
+- [x] 1.3 Add registry query API: list all plugin registrations for a workspace with status, ordered by `plugin_id` (for CLI + TUI)
+- [x] 1.4 Unit tests: status round-trip per (plugin_id, workspace_key), invalid status rejected, migration preserves rows, unregistered read returns nothing
 
 ## Phase 2 — Circuit Breaker (plugin-circuit-breaker)
 
