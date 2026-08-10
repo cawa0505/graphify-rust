@@ -31,7 +31,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use types::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, PathParams, QueryNodeParams, QueryParams,
     ReindexParams, TracePathParams,
@@ -172,7 +172,10 @@ fn main() -> Result<()> {
     let opendoc = Rc::new(RefCell::new(build_opendoc_plugin()));
     // Embedded review plugin: code-review-graph bridge (file-based ingest,
     // line→symbol binding in graphify.db); review* tools are self-contained.
-    let review = Rc::new(RefCell::new(build_review_plugin()));
+    // Slice 2: notify buffer 收集 ImpactAlert，response 寫完後以
+    // notifications/review/impact_alert 轉發給 client（T2.3）。
+    let review_notify: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let review = Rc::new(RefCell::new(build_review_plugin(Arc::clone(&review_notify))));
     // Embedded telemetry plugin: Draco Telemetry bridge (file-based ingest,
     // hotspot threshold in graphify.db); telemetry* tools are self-contained.
     let telemetry = Rc::new(RefCell::new(build_telemetry_plugin()));
@@ -208,6 +211,19 @@ fn main() -> Result<()> {
                 let response_json = serde_json::to_string(&response)?;
                 writeln!(stdout, "{response_json}")?;
                 stdout.flush()?;
+                // Slice 2 T2.3：response 後再轉發 ImpactAlert notifications
+                // （先回應後通知，避免與 pending-request bookkeeping 交錯）。
+                if let Ok(mut buf) = review_notify.lock() {
+                    for alert in buf.drain(..) {
+                        let notif = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/review/impact_alert",
+                            "params": alert,
+                        });
+                        writeln!(stdout, "{notif}")?;
+                    }
+                    stdout.flush()?;
+                }
             }
             Err(e) => {
                 eprintln!("Failed to parse request: {e}");
@@ -247,14 +263,16 @@ fn build_opendoc_plugin() -> OpendocPlugin {
     p.bind_for_cli(&cwd)
 }
 
-fn build_review_plugin() -> ReviewPlugin {
+fn build_review_plugin(notify: Arc<Mutex<Vec<serde_json::Value>>>) -> ReviewPlugin {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut p = ReviewPlugin::new().with_registry_path(graphify_registry::registry_db_path());
     // v1.1：注入 notify callback（host 控制轉發，Dependency Inversion）。
-    // ponytail: Slice 2 T2.3 把 stderr log 換成真正 MCP notifications/review/impact_alert
-    // 寫入；v1.1 只驗證 channel 通（plugin emit → host 收到）。
-    p.set_notify_callback(Some(Box::new(|payload| {
-        eprintln!("[review:impact] {}", payload);
+    // Slice 2 T2.3：plugin emit 的 ImpactAlert 先進 buffer，response 寫完後
+    // 由 main loop drain 成 MCP notifications/review/impact_alert 轉發。
+    p.set_notify_callback(Some(Box::new(move |payload| {
+        if let Ok(mut buf) = notify.lock() {
+            buf.push(payload);
+        }
     })));
     // Slice 1/2：CRG_MCP_URL 設定時注入即時分析 client（目前保留骨架）。
     p.bind_for_cli(&cwd)
