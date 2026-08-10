@@ -3,6 +3,13 @@
 > **Docs/ref 快照聲明**：以下為用戶提供的 v2.0-beta 規格原文，verbatim 保留（docs/ref 規則 #3127）。本文件是**未來願景文件**（Target Release: v2.0-beta），不代表目前已實作之功能。與現況的差異分析見各 OpenSpec change 與 roadmap 文件。
 
 > Note 2026-08-10: v2.0-alpha 的版本策略與 release 流程正式化，見 `docs/release-process.md`（OpenSpec change `release-v2-alpha`）。原始條文未改動。
+> Note 2026-08-10 (Scope Decision): graphify-sdk Python SDK（Beta-M1）自 v2.0-beta 範圍移除，暫緩至 2.0 release 之後再評估。原始條文未改動。
+> Note 2026-08-10 (現況調研, 2026-08-10 調研): v2.0-beta 推進前的現況差距盤點：
+> - SQLite Global Registry 已實作（workspaces / plugin_registrations / handoff_registry 三表 + `graphify workspace list/switch/status`，OpenSpec change `sqlite-global-registry` 完成）；但 `PluginStatus` 僅有 Ready/Unavailable 二態（graphify-registry/src/db.rs:35），需擴充為 HEALTHY/DEGRADED/UNAVAILABLE + QUARANTINED 以符合 §2.2/§2.3。
+> - Plugin 熔斷機制不存在：目前僅 `PluginHost::broadcast` 以 `catch_unwind` 隔離單一 plugin panic（graphify-cli/src/plugin_host.rs），無 500ms Timeout、無 Schema Strict Validation、無 3x Auto-Quarantine（§2.3 全部待實作）。
+> - Passive Health Probe 不存在（§2.2 待實作）；`plugin_registrations.status` 的寫入點僅 RehydrateJob 的 Ready/Unavailable（graphify-cli/src/rehydrate.rs）。
+> - TUI 圖譜 Inspector 已實作（graphify-cli/src/tui.rs，OpenSpec change `cli-tui-graph` 的 17 任務對應程式碼已存在），但 `graphify tui` 仍 cwd 綁定讀 `graphify-out/graph.toon`（graphify-cli/src/main.rs:82），無 workspace 切換（§3 之 workspace selector 待實作）。
+> - 推進範圍：v2.0-beta = M2（熔斷 + Schema Filter）+ M3（Health Probe + SQLite 三態 + TUI workspace/plugin 面板 + [F5]）+ M4（E2E Integration Test）。原始條文未改動。
 
 📄 文件概覽 (Document Overview)
 

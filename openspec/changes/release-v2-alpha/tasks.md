@@ -23,5 +23,5 @@
 
 ## 4. Tag and Publish
 
-- [ ] 4.1 On user approval, create git tag `v2.0.0-alpha.1` at the release commit
-- [ ] 4.2 Push tag and branch to remote
+- [x] 4.1 On user approval, create git tag `v2.0.0-alpha.1` at the release commit
+- [x] 4.2 Push tag and branch to remote
