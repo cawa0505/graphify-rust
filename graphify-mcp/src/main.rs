@@ -1119,10 +1119,13 @@ fn run_review_tool(
         }
         "reviewSearchCrg" => {
             let base = get_str("base");
-            let (bound, orphan) = review
+            let (node_ids, orphan) = review
                 .review_search_crg(base)
                 .map_err(|e| anyhow!("review search_crg: {e}"))?;
-            Ok(format!("[review] search-crg: {bound} bound, {orphan} orphan"))
+            Ok(format!(
+                "[review] search-crg: {} bound, {orphan} orphan",
+                node_ids.len()
+            ))
         }
         _ => anyhow::bail!("Unsupported review tool: {name}"),
     }

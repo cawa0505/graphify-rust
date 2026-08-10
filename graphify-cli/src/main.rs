@@ -1020,10 +1020,16 @@ fn run_review(command: ReviewCommand) -> Result<()> {
         }
         ReviewCommand::SearchCrg { base } => {
             feed_graph_and_drift(&mut plugin, &cwd);
-            let (bound, orphan) = plugin
+            let (node_ids, orphan) = plugin
                 .review_search_crg(base.as_deref())
                 .map_err(|e| anyhow!("review search-crg: {e}"))?;
-            println!("[review] search-crg: {bound} bound, {orphan} orphan");
+            println!(
+                "[review] search-crg: {} bound, {orphan} orphan",
+                node_ids.len()
+            );
+            for n in &node_ids {
+                println!("  - {n}");
+            }
         }
         ReviewCommand::GetContext { node } => {
             feed_graph_and_drift(&mut plugin, &cwd);
