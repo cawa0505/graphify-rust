@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-cli"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-core"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "petgraph",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-llm"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "graphify-core",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-mcp"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "graphify-core",
@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-memory"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "graphify-registry"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "graphify-core",
  "rusqlite",
