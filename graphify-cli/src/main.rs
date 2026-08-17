@@ -431,10 +431,15 @@ fn run_init(project_dir: &Path) -> Result<()> {
     // ── 2. Create .opencode/ directory ──
     fs::create_dir_all(&state_dir).context("failed to create .opencode/")?;
 
-    // ── 3. Write state.json ──
+    // ── 3. Determine ast_synced before writing state ──
+    let graph_out_dir = project_dir.join("graphify-out");
+    let graph_already_exists = graph_out_dir.exists();
+    let ast_synced = graph_already_exists; // graph already on disk, no need to re-extract
+
+    // ── 4. Write state.json (start at PLANNING, not INIT) ──
     let state = serde_json::json!({
         "version": "1.0.0",
-        "phase": "INIT",
+        "phase": "PLANNING",
         "active_goal": "",
         "allowed_actions": ["checkpoint", "get_status"],
         "staging_buffer": {
@@ -443,7 +448,7 @@ fn run_init(project_dir: &Path) -> Result<()> {
             "patch_content": null
         },
         "checkpoints": [],
-        "ast_synced": false
+        "ast_synced": ast_synced
     });
     let state_json = serde_json::to_string_pretty(&state)?;
     fs::write(&state_path, &state_json).context("failed to write state.json")?;
@@ -467,18 +472,40 @@ fn run_init(project_dir: &Path) -> Result<()> {
 
     // ── 5. Run graphify extract ──
     let graph_out = project_dir.join("graphify-out").join("graph.toon");
-    let extract_result = if project_dir.join("graphify-out").exists() {
-        "graphify-out/ already exists, skipping extract".to_string()
+    let (extract_result, extract_ast_synced) = if graph_out_dir.exists() {
+        ("graphify-out/ already exists, skipping extract".to_string(), true)
     } else {
         match run_extract(project_dir, &graph_out, None) {
-            Ok(()) => format!("AST graph: {} files indexed", count_files(project_dir)),
-            Err(e) => format!("extract skipped: {e}"),
+            Ok(()) => (
+                format!("AST graph: {} files indexed", count_files(project_dir)),
+                true,
+            ),
+            Err(e) => (format!("extract skipped: {e}"), false),
         }
     };
 
+    // Rewrite state.json if ast_synced changed (e.g. extract just succeeded)
+    if extract_ast_synced != ast_synced {
+        let state = serde_json::json!({
+            "version": "1.0.0",
+            "phase": "PLANNING",
+            "active_goal": "",
+            "allowed_actions": ["checkpoint", "get_status"],
+            "staging_buffer": {
+                "has_pending_patch": false,
+                "target_file": null,
+                "patch_content": null
+            },
+            "checkpoints": [],
+            "ast_synced": extract_ast_synced
+        });
+        let state_json = serde_json::to_string_pretty(&state)?;
+        fs::write(&state_path, &state_json).context("failed to rewrite state.json")?;
+    }
+
     // ── 6. Summary ──
     println!("✅ graphify init — {project_type} project at {}", project_dir.display());
-    println!("   ├─ .opencode/state.json  created (phase: INIT)");
+    println!("   ├─ .opencode/state.json  created (phase: PLANNING, ast_synced: {ast_synced_show})", ast_synced_show = if extract_ast_synced { "true" } else { "false" });
     if gitignore_updated {
         println!("   ├─ .gitignore  updated");
     }
