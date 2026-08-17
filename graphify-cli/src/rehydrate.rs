@@ -247,6 +247,69 @@ mod tests {
     }
 
     #[test]
+    fn run_filters_invalid_envelopes_silently() -> Result<()> {
+        // Only invalid envelopes → run returns Ok (no valid ones to push).
+        let dir = tempfile::tempdir()?;
+        let db = RegistryDb::open(&dir.path().join("registry.db"))?;
+        db.upsert_workspace("ws-a", "/tmp/ws-a")?;
+        db.upsert_plugin_registration("handoff", "ws-a", "graphify_plugin_handoff")?;
+
+        let store = Arc::new(PluginDomainMemory::new(dir.path().join("mem")));
+        // Invalid: created_at = 0 (new() accepts it, validate_envelope rejects).
+        let bad = PluginMemoryEnvelope::new(
+            "ws-a",
+            "handoff",
+            "rec-bad",
+            "handoff",
+            0,  // created_at <= 0 is invalid
+            vec![],
+            serde_json::json!({"x": 1}),
+        );
+        store.put_record(&bad)?;
+
+        let job = RehydrateJob::new(store.clone(), "http://127.0.0.1:1")?;
+        // No Qdrant connection needed — all records filtered out.
+        job.run(&db, "handoff", "ws-a")?;
+        Ok(())
+    }
+
+    #[test]
+    fn run_mixed_envelopes_only_pushes_valid() -> Result<()> {
+        // Valid + invalid → push attempt fails on the valid one (server
+        // unreachable), but the invalid envelope never reaches the push code.
+        let dir = tempfile::tempdir()?;
+        let db = RegistryDb::open(&dir.path().join("registry.db"))?;
+        db.upsert_workspace("ws-a", "/tmp/ws-a")?;
+        db.upsert_plugin_registration("handoff", "ws-a", "graphify_plugin_handoff")?;
+
+        let store = Arc::new(PluginDomainMemory::new(dir.path().join("mem")));
+        let valid = envelope("ws-a", "rec-valid", 1_800_000_000);
+        store.put_record(&valid)?;
+        // Invalid: null payload.
+        let bad = PluginMemoryEnvelope::new(
+            "ws-a",
+            "handoff",
+            "rec-bad",
+            "handoff",
+            1_800_000_000,
+            vec![],
+            serde_json::Value::Null,
+        );
+        store.put_record(&bad)?;
+
+        let job = RehydrateJob::new(store.clone(), "http://127.0.0.1:1")?;
+        // Push fails because server is unreachable, but the error should be
+        // about the push, not about validation.
+        let err = job.run(&db, "handoff", "ws-a").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("rehydration push failed"),
+            "expected push error, got: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn failed_run_preserves_pending_records_and_checkpoint() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = RegistryDb::open(&dir.path().join("registry.db"))?;

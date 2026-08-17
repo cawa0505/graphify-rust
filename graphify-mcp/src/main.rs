@@ -14,7 +14,7 @@ use graphify_core::extract::extract_file;
 use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
 use graphify_core::graph::query::query_bfs;
-use graphify_core::plugin::GraphifyPlugin;
+use graphify_core::plugin::{GraphifyPlugin, derive_workspace_key};
 use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use graphify_llm::config::PluginsConfig;
 use graphify_plugin_handoff::relay::SaveArgs;
@@ -144,11 +144,20 @@ fn main() -> Result<()> {
 
     // Plugin declarations are best-effort: a broken config or a failing
     // plugin process must never prevent the MCP server from starting.
+    //
+    // The circuit breaker seeds quarantined plugins from the global registry
+    // db. If the db is unavailable the server cannot start — the XDG data
+    // directory must be writable.
+    let registry_db = graphify_registry::RegistryDb::open(&graphify_registry::registry_db_path())?;
+    let workspace_key = std::env::current_dir()
+        .ok()
+        .map(|p| derive_workspace_key(&p))
+        .unwrap_or_else(|| "default".to_string());
     let plugin_host = Rc::new(RefCell::new(match PluginsConfig::load() {
-        Ok(config) => PluginHost::scan(&config),
+        Ok(config) => PluginHost::scan(&config, &registry_db, &workspace_key),
         Err(e) => {
             eprintln!("graphify-mcp: failed to load plugin config, starting without plugins: {e}");
-            PluginHost::scan(&PluginsConfig::default())
+            PluginHost::scan(&PluginsConfig::default(), &registry_db, &workspace_key)
         }
     }));
 

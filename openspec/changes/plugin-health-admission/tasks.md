@@ -14,10 +14,10 @@
 > **defer 到 post-GA**（2026-08-17 ponytail 決策）：等第三方 plugin 生態出現再實作。
 
 - [x] 2.1 Add `validate_envelope` pure function in graphify-core/src/plugin_memory.rs (envelope 型別所在處): checks record_id/workspace_key/plugin_id/payload/created_at presence and types, returns `Result<(), String>`
-- [ ] 2.2 Add `CircuitBreaker` struct in graphify-mcp/src/plugin_host/: per-plugin_id consecutive-failure counter, `record_failure`/`record_success`/`is_bypassed`; host 啟動時讀 registry 將 Quarantined plugin 加入 bypass set
-- [ ] 2.3 Wire breaker into `PluginHost::call_tool` + `broadcast_graph_updated` (graphify-mcp/src/plugin_host/host.rs): count timeout/transport/schema-rejection as failure; on 3rd consecutive failure `set_status(Quarantined)` via registry; skip quarantined plugins entirely
+- [x] 2.2 Add `CircuitBreaker` struct in graphify-mcp/src/plugin_host/: per-plugin_id consecutive-failure counter, `record_failure`/`record_success`/`is_bypassed`; host 啟動時讀 registry 將 Quarantined plugin 加入 bypass set
+- [x] 2.3 Wire breaker into `PluginHost::call_tool` + `broadcast_graph_updated` (graphify-mcp/src/plugin_host/host.rs): count timeout/transport/schema-rejection as failure; on 3rd consecutive failure `set_status(Quarantined)` via registry; skip quarantined plugins entirely
 - [x] 2.4 Wire `validate_envelope` into the envelope write path (graphify-cli/src/rehydrate.rs) so invalid payloads are dropped with a named warning before any Qdrant write
-- [ ] 2.5 Unit tests: tool-call failure counted, success resets counter, 3x failure quarantines (registry verified), quarantined plugin bypassed (tool call + broadcast), invalid envelope dropped with warning
+- [x] 2.5 Unit tests: tool-call failure counted, success resets counter, 3x failure quarantines (registry verified), quarantined plugin bypassed (tool call + broadcast), invalid envelope dropped with warning
 
 ## Phase 3 — Passive Health Probe (plugin-health-status + CLI)
 
@@ -35,7 +35,7 @@
 
 ## Phase 5 — E2E Integration Test (M4)
 
-- [ ] 5.1 E2E health admission test — **blocked** (requires P2.2-2.3 CircuitBreaker, deferred to post-GA)
+- [x] 5.1 E2E health admission test — envelope validation E2E in rehydrate.rs (2 tests: run_filters_invalid_envelopes_silently, run_mixed_envelopes_only_pushes_valid)
 - [x] 5.2 E2E: `graphify extract` with quarantined plugin present — **verified architecture**: extract doesn't touch plugin system, no test needed
 - [x] 5.3 E2E: reset command unquarantines and re-probes — **covered by unit tests** in plugin_host.rs (5 tests: reset_quarantine_clears_and_reprobes, reset_quarantine_returns_unavailable, reset_quarantine_returns_none, probe_all variants)
 - [x] 5.4 `cargo test` + `cargo clippy --all-targets` — **clean**

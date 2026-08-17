@@ -4,6 +4,7 @@
 //! plugin servers as subprocesses, aggregates their tools under the
 //! `graphify_plugin_<id>_<tool>` namespace, and forwards tool calls.
 
+pub mod breaker;
 pub mod framing;
 pub mod host;
 pub mod process;
