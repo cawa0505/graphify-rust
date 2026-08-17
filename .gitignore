@@ -7,3 +7,4 @@
 Cargo.lock
 AGENTS.md
 .qdrant-initialized
+lcov.info
