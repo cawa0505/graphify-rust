@@ -154,12 +154,15 @@ pub enum WorkspaceCommand {
         /// Workspace key (defaults to active)
         workspace_key: Option<String>,
     },
-    /// Add a new workspace
+    /// Add a workspace by root path. Key is auto-derived; '.' resolved to full path.
     Add {
-        /// Workspace key (unique identifier)
-        workspace_key: String,
-        /// Root path of the workspace
+        /// Root path of the workspace (e.g. /home/user/project or .)
         root_path: String,
+    },
+    /// Delete a workspace by key
+    Delete {
+        /// Workspace key to delete
+        workspace_key: String,
     },
 }
 
@@ -356,7 +359,8 @@ fn main() -> Result<()> {
             WorkspaceCommand::List => run_workspace_list()?,
             WorkspaceCommand::Switch { workspace_key } => run_workspace_switch(&workspace_key)?,
             WorkspaceCommand::Status { workspace_key } => run_workspace_status(workspace_key)?,
-            WorkspaceCommand::Add { workspace_key, root_path } => run_workspace_add(&workspace_key, &root_path)?,
+            WorkspaceCommand::Add { root_path } => run_workspace_add(&root_path)?,
+            WorkspaceCommand::Delete { workspace_key } => run_workspace_delete(&workspace_key)?,
         },
         Commands::Handoff { command } => run_handoff(command)?,
         Commands::Opendoc { command } => run_opendoc(command)?,
@@ -919,10 +923,20 @@ fn run_workspace_switch(workspace_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Add a new workspace
-fn run_workspace_add(workspace_key: &str, root_path: &str) -> Result<()> {
-    workspace::upsert_workspace(workspace_key, root_path)?;
-    println!("[graphify] Workspace '{workspace_key}' added at '{root_path}'");
+/// Add a workspace by root path. Key auto-derived; path deduped.
+fn run_workspace_add(root_path: &str) -> Result<()> {
+    if workspace::add_workspace(root_path)? {
+        println!("[graphify] Workspace added at '{root_path}'");
+    } else {
+        println!("[graphify] Workspace already registered: '{root_path}'");
+    }
+    Ok(())
+}
+
+/// Delete a workspace by key.
+fn run_workspace_delete(workspace_key: &str) -> Result<()> {
+    workspace::delete_workspace(workspace_key)?;
+    println!("[graphify] Workspace deleted: '{workspace_key}'");
     Ok(())
 }
 

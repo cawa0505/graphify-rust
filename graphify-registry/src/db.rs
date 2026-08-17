@@ -296,6 +296,43 @@ impl RegistryDb {
             .map_err(Into::into)
     }
 
+    /// Find a workspace by root path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` on `SQLite` failure.
+    pub fn find_workspace_by_path(&self, root_path: &str) -> Result<Option<WorkspaceRow>, RegistryError> {
+        self.conn
+            .query_row(
+                "SELECT workspace_key, root_path, is_active, last_indexed_at
+                 FROM workspaces WHERE root_path = ?1 LIMIT 1",
+                [root_path],
+                |row| {
+                    Ok(WorkspaceRow {
+                        workspace_key: row.get(0)?,
+                        root_path: row.get(1)?,
+                        is_active: row.get::<_, i64>(2)? != 0,
+                        last_indexed_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Delete a workspace by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` on `SQLite` failure.
+    pub fn delete_workspace(&self, workspace_key: &str) -> Result<(), RegistryError> {
+        self.conn.execute(
+            "DELETE FROM workspaces WHERE workspace_key = ?1",
+            [workspace_key],
+        )?;
+        Ok(())
+    }
+
     // ---- plugin registrations ----
 
     /// Register a plugin for a workspace. First registration starts with
