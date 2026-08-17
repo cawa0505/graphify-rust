@@ -267,8 +267,7 @@ mod tests {
         );
         store.put_record(&bad)?;
 
-        let job = RehydrateJob::new(store.clone(), "http://127.0.0.1:1")?;
-        // No Qdrant connection needed — all records filtered out.
+        let job = RehydrateJob::new(store, "http://127.0.0.1:1")?;
         job.run(&db, "handoff", "ws-a")?;
         Ok(())
     }
@@ -297,10 +296,12 @@ mod tests {
         );
         store.put_record(&bad)?;
 
-        let job = RehydrateJob::new(store.clone(), "http://127.0.0.1:1")?;
+        let job = RehydrateJob::new(store, "http://127.0.0.1:1")?;
         // Push fails because server is unreachable, but the error should be
         // about the push, not about validation.
-        let err = job.run(&db, "handoff", "ws-a").unwrap_err();
+        let Err(err) = job.run(&db, "handoff", "ws-a") else {
+            panic!("expected push failure");
+        };
         let msg = format!("{err:#}");
         assert!(
             msg.contains("rehydration push failed"),

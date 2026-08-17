@@ -152,13 +152,12 @@ mod tests {
     use tempfile::TempDir;
 
     /// Create a temp db with a test workspace seeded.
-    fn test_db() -> (RegistryDb, TempDir) {
-        let dir = TempDir::new().expect("temp");
+    fn test_db() -> Result<(RegistryDb, TempDir), graphify_registry::RegistryError> {
+        let dir = TempDir::new().map_err(|e| graphify_registry::RegistryError::Schema(format!("tempdir: {e}")))?;
         let db_path = dir.path().join("test.db");
-        let db = RegistryDb::open(&db_path).expect("open db");
-        db.upsert_workspace("test_workspace", "/tmp/test")
-            .expect("register ws");
-        (db, dir)
+        let db = RegistryDb::open(&db_path)?;
+        db.upsert_workspace("test_workspace", "/tmp/test")?;
+        Ok((db, dir))
     }
 
     /// A mock plugin config: one `hello` tool that replies to tools/call.
@@ -212,19 +211,20 @@ printf 'Content-Length: %s\r\n\r\n%s' "$l3" "$r3"
     }
 
     #[test]
-    fn test_scan_and_list_tools_namespaced() {
-        let (db, _dir) = test_db();
+    fn test_scan_and_list_tools_namespaced() -> anyhow::Result<()> {
+        let (db, _dir) = test_db()?;
         let mut plugins = HashMap::new();
         plugins.insert("mock".to_string(), mock_config(true));
         let host = PluginHost::scan(&plugins_config(plugins), &db, "test_workspace");
         let tools = host.list_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "graphify_plugin_mock_hello");
+        Ok(())
     }
 
     #[test]
     fn test_call_tool_routes_and_returns() -> anyhow::Result<()> {
-        let (db, _dir) = test_db();
+        let (db, _dir) = test_db()?;
         let mut plugins = HashMap::new();
         plugins.insert("mock".to_string(), mock_config(true));
         let mut host = PluginHost::scan(&plugins_config(plugins), &db, "test_workspace");
@@ -234,27 +234,29 @@ printf 'Content-Length: %s\r\n\r\n%s' "$l3" "$r3"
     }
 
     #[test]
-    fn test_call_tool_error_propagates() {
-        let (db, _dir) = test_db();
+    fn test_call_tool_error_propagates() -> anyhow::Result<()> {
+        let (db, _dir) = test_db()?;
         let mut plugins = HashMap::new();
         plugins.insert("mock".to_string(), mock_config(false));
         let mut host = PluginHost::scan(&plugins_config(plugins), &db, "test_workspace");
         let err = host.call_tool("graphify_plugin_mock_hello", &json!({}));
         assert!(err.is_err(), "plugin error must propagate");
+        Ok(())
     }
 
     #[test]
-    fn test_unprefixed_name_is_rejected() {
-        let (db, _dir) = test_db();
+    fn test_unprefixed_name_is_rejected() -> anyhow::Result<()> {
+        let (db, _dir) = test_db()?;
         let mut plugins = HashMap::new();
         plugins.insert("mock".to_string(), mock_config(true));
         let mut host = PluginHost::scan(&plugins_config(plugins), &db, "test_workspace");
         assert!(host.call_tool("graphify_query", &json!({})).is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_failed_plugin_contributes_no_tools() {
-        let (db, _dir) = test_db();
+    fn test_failed_plugin_contributes_no_tools() -> anyhow::Result<()> {
+        let (db, _dir) = test_db()?;
         let cfg = PluginConfig {
             command: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "exit 1".to_string()],
@@ -268,11 +270,12 @@ printf 'Content-Length: %s\r\n\r\n%s' "$l3" "$r3"
             host.list_tools().is_empty(),
             "dead plugin must add no tools"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_broadcast_to_ready_plugin_is_isolated() {
-        let (db, _dir) = test_db();
+    fn test_broadcast_to_ready_plugin_is_isolated() -> anyhow::Result<()> {
+        let (db, _dir) = test_db()?;
         // The mock replies to the notification with an id-3 response nobody is
         // waiting for; broadcast must not panic and must not mark the plugin
         // failed (notification delivery is fire-and-forget).
@@ -285,5 +288,6 @@ printf 'Content-Length: %s\r\n\r\n%s' "$l3" "$r3"
             1,
             "plugin stays ready after broadcast"
         );
+        Ok(())
     }
 }

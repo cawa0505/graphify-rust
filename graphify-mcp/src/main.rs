@@ -151,8 +151,7 @@ fn main() -> Result<()> {
     let registry_db = graphify_registry::RegistryDb::open(&graphify_registry::registry_db_path())?;
     let workspace_key = std::env::current_dir()
         .ok()
-        .map(|p| derive_workspace_key(&p))
-        .unwrap_or_else(|| "default".to_string());
+        .map_or_else(|| "default".to_string(), |p| derive_workspace_key(&p));
     let plugin_host = Rc::new(RefCell::new(match PluginsConfig::load() {
         Ok(config) => PluginHost::scan(&config, &registry_db, &workspace_key),
         Err(e) => {
