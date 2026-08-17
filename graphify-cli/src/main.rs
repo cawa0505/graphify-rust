@@ -24,7 +24,8 @@ use graphify_plugin_test_coverage::CoveragePlugin;
 use graphify_registry::db::RegistryDb;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
-use std::io::Read;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -129,6 +130,12 @@ enum Commands {
     Coverage {
         #[command(subcommand)]
         command: CoverageCommand,
+    },
+    /// Initialize a project with graphify + statemachine infrastructure (state.json, .gitignore, AST graph)
+    Init {
+        /// Project directory (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -394,8 +401,117 @@ fn main() -> Result<()> {
         Commands::Opendoc { command } => run_opendoc(command)?,
         Commands::Review { command } => run_review(command)?,
         Commands::Coverage { command } => run_coverage(command)?,
+        Commands::Init { path } => run_init(&path)?,
     }
     Ok(())
+}
+
+fn run_init(project_dir: &Path) -> Result<()> {
+    let state_dir = project_dir.join(".opencode");
+    let state_path = state_dir.join("state.json");
+    let gitignore_path = project_dir.join(".gitignore");
+
+    // Ensure cwd
+    let cwd = std::env::current_dir()?;
+    if project_dir != cwd {
+        std::env::set_current_dir(project_dir)?;
+    }
+
+    // ── 1. Detect project type ──
+    let project_type = if project_dir.join("Cargo.toml").exists() {
+        "Rust"
+    } else if project_dir.join("package.json").exists() {
+        "Node.js"
+    } else if project_dir.join("go.mod").exists() {
+        "Go"
+    } else {
+        "unknown"
+    };
+
+    // ── 2. Create .opencode/ directory ──
+    fs::create_dir_all(&state_dir).context("failed to create .opencode/")?;
+
+    // ── 3. Write state.json ──
+    let state = serde_json::json!({
+        "version": "1.0.0",
+        "phase": "INIT",
+        "active_goal": "",
+        "allowed_actions": ["checkpoint", "get_status"],
+        "staging_buffer": {
+            "has_pending_patch": false,
+            "target_file": null,
+            "patch_content": null
+        },
+        "checkpoints": [],
+        "ast_synced": false
+    });
+    let state_json = serde_json::to_string_pretty(&state)?;
+    fs::write(&state_path, &state_json).context("failed to write state.json")?;
+
+    // ── 4. Update .gitignore ──
+    let mut gitignore_updated = false;
+    let gi_content = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path)?
+    } else {
+        String::new()
+    };
+    if !gi_content.contains(".opencode/") {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&gitignore_path)?;
+        let sep = if gi_content.trim().is_empty() { "" } else { "\n" };
+        writeln!(file, "{sep}# StateMachineMcp (local state)\n.opencode/")?;
+        gitignore_updated = true;
+    }
+
+    // ── 5. Run graphify extract ──
+    let graph_out = project_dir.join("graphify-out").join("graph.toon");
+    let extract_result = if project_dir.join("graphify-out").exists() {
+        "graphify-out/ already exists, skipping extract".to_string()
+    } else {
+        match run_extract(project_dir, &graph_out, None) {
+            Ok(()) => format!("AST graph: {} files indexed", count_files(project_dir)),
+            Err(e) => format!("extract skipped: {e}"),
+        }
+    };
+
+    // ── 6. Summary ──
+    println!("✅ graphify init — {project_type} project at {}", project_dir.display());
+    println!("   ├─ .opencode/state.json  created (phase: INIT)");
+    if gitignore_updated {
+        println!("   ├─ .gitignore  updated");
+    }
+    println!("   └─ {extract_result}");
+
+    // Restore cwd if changed
+    if project_dir != cwd {
+        std::env::set_current_dir(cwd)?;
+    }
+
+    Ok(())
+}
+
+fn count_files(dir: &Path) -> usize {
+    if !dir.is_dir() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                if let Ok(ty) = entry.file_type() {
+                    if ty.is_dir() {
+                        stack.push(entry.path());
+                    } else if ty.is_file() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
 }
 
 fn run_extract(input_path: &Path, output_path: &Path, concurrency: Option<usize>) -> Result<()> {
