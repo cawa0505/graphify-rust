@@ -58,7 +58,7 @@ additional steps:
 
 ## History
 
-- 2026-08-17: v2.0.0-beta.x — beta release process documented
-  (post-P3 health probe, P4 TUI workspace/monitor, P5 E2E tests).
+- 2026-08-17: v2.0.0-beta.1 — beta release
+  (plugin-health-admission delivered, crates bumped to beta.1).
 - 2026-08-10: v2.0.0-alpha.1 — first release under this process
   (RFC-0004 Target Release: Graphify v2.0-alpha).
