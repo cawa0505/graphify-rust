@@ -20,6 +20,7 @@ use graphify_core::{
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
+use graphify_registry::db::RegistryDb;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -128,6 +129,15 @@ enum Commands {
 pub enum PluginCommand {
     /// Manually trigger graph-update hooks for all bound plugins
     RunHooks,
+    /// Run a passive health probe on all bound plugins
+    Probe,
+    /// Reset a quarantined plugin and re-probe it
+    Reset {
+        /// Plugin ID to reset (e.g. handoff, opendoc, review)
+        plugin_id: String,
+    },
+    /// List all registered plugins with their current health status
+    List,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -331,6 +341,9 @@ fn main() -> Result<()> {
         } => run_index(&path, config.as_deref(), output.as_deref(), force)?,
         Commands::Plugin { command } => match command {
             PluginCommand::RunHooks => run_hooks()?,
+            PluginCommand::Probe => run_plugin_probe()?,
+            PluginCommand::Reset { plugin_id } => run_plugin_reset(&plugin_id)?,
+            PluginCommand::List => run_plugin_list()?,
         },
         Commands::Workspace { command } => match command {
             WorkspaceCommand::List => run_workspace_list()?,
@@ -739,9 +752,13 @@ fn run_tui(graph_path: &Path) -> Result<()> {
 
 /// Manually trigger a `Manual` graph-update event for all bound plugins.
 fn run_hooks() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let db = RegistryDb::open(&graphify_registry::registry_db_path())
+        .context("opening registry")?;
     let mut host = plugin_host::PluginHost::new();
+    register_embedded_plugins(&mut host, &cwd, &db);
     host.broadcast(&GraphUpdateEvent::new(
-        derive_workspace_key(std::env::current_dir()?),
+        derive_workspace_key(&cwd),
         Vec::new(),
         GraphUpdateKind::Manual,
     ));
@@ -750,6 +767,82 @@ fn run_hooks() -> Result<()> {
         host.len()
     );
     Ok(())
+}
+
+/// Run a passive health probe on all bound plugins and print results.
+fn run_plugin_probe() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let workspace_key = derive_workspace_key(&cwd);
+    let db = RegistryDb::open(&graphify_registry::registry_db_path())
+        .context("opening registry for probe")?;
+    let mut host = plugin_host::PluginHost::new();
+    register_embedded_plugins(&mut host, &cwd, &db);
+    let results = host.probe_all(&db, &workspace_key);
+    for (id, status) in &results {
+        println!("{id}\t{status}");
+    }
+    Ok(())
+}
+
+/// Reset a quarantined plugin and re-probe it.
+fn run_plugin_reset(plugin_id: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let workspace_key = derive_workspace_key(&cwd);
+    let db = RegistryDb::open(&graphify_registry::registry_db_path())
+        .context("opening registry for reset")?;
+    let mut host = plugin_host::PluginHost::new();
+    register_embedded_plugins(&mut host, &cwd, &db);
+    match host.reset_quarantine(&db, &workspace_key, plugin_id) {
+        Some(status) => {
+            println!("{plugin_id}\t{status}");
+            Ok(())
+        }
+        None => anyhow::bail!("plugin '{plugin_id}' not found"),
+    }
+}
+
+/// List all registered plugins with their current health status.
+fn run_plugin_list() -> Result<()> {
+    let db = RegistryDb::open(&graphify_registry::registry_db_path())
+        .context("opening registry for list")?;
+    let cwd = std::env::current_dir()?;
+    let workspace_key = derive_workspace_key(&cwd);
+    let rows = db.list_registrations(&workspace_key)?;
+    if rows.is_empty() {
+        println!("[graphify] No plugins registered for this workspace.");
+        return Ok(());
+    }
+    for row in &rows {
+        println!("{}\t{}", row.plugin_id, row.status);
+    }
+    Ok(())
+}
+
+/// Register all embedded plugins into the host.
+///
+/// ponytail: kept in one place so `run_hooks`, `probe`, `reset` share the
+/// same registration set. Add new plugins here.
+fn register_embedded_plugins(
+    host: &mut plugin_host::PluginHost,
+    cwd: &Path,
+    _db: &RegistryDb,
+) {
+    // handoff
+    let mut handoff = RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    handoff.bind_for_cli(cwd);
+    host.register(Box::new(handoff));
+
+    // opendoc
+    let opendoc = OpendocPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path())
+        .bind_for_cli(cwd);
+    host.register(Box::new(opendoc));
+
+    // review
+    let review = graphify_plugin_review::ReviewPlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path())
+        .bind_for_cli(cwd);
+    host.register(Box::new(review));
 }
 
 /// List all registered workspaces from the global registry.

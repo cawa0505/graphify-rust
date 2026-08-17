@@ -24,7 +24,7 @@ pub use plugin::{
 };
 pub use plugin_memory::{
     HandoffPayload, HandoffSnapshot, MemoryQueryCriteria, OpenDocPayload, PluginMemoryEnvelope,
-    ReviewPayload,
+    ReviewPayload, validate_envelope,
 };
 pub use toon::{from_toon, to_toon};
 pub use types::{Edge, ExtractionResult, FileType, GraphMetadata, GraphOutput, Node, NodeId};

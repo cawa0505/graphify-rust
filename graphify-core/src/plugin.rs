@@ -170,6 +170,16 @@ pub trait GraphifyPlugin {
     /// The default implementation is a no-op, so v1 plugins that predate this
     /// method remain source-compatible.
     fn set_notify_callback(&mut self, _cb: Option<NotifyCallback>) {}
+
+    /// Performs a lightweight health check (passive probe).
+    ///
+    /// Returns `true` if the plugin is fully operational, `false` if it is
+    /// unavailable. The default returns `false` to avoid false positives —
+    /// plugins that override this are responsible for reporting their actual
+    /// health.
+    fn on_health_check(&self) -> bool {
+        false
+    }
 }
 
 /// Host-injected push channel for plugin domain events (v1.1).

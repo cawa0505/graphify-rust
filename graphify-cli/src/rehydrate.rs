@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use graphify_core::plugin_memory::PluginMemoryEnvelope;
+use graphify_core::validate_envelope;
 use graphify_memory::plugin_memory::PluginDomainMemory;
 use graphify_registry::db::{RegistryDb, RegistryError};
 use graphify_registry::resync::SyncJob;
@@ -149,8 +150,26 @@ impl SyncJob for RehydrateJob {
         if pending.is_empty() {
             return Ok(());
         }
+
+        // Filter out structurally invalid envelopes (ponytail: first line of
+        // defence for plugin data integrity — no Qdrant write for bad data).
+        let valid: Vec<_> = pending
+            .into_iter()
+            .filter(|env| {
+                if let Err(e) = validate_envelope(env) {
+                    eprintln!("[rehydrate] dropping invalid envelope: {e}");
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        if valid.is_empty() {
+            return Ok(());
+        }
+
         self.rt
-            .block_on(self.push_points(&reg.qdrant_collection_name, &pending))
+            .block_on(self.push_points(&reg.qdrant_collection_name, &valid))
             .map_err(|e| RegistryError::Schema(format!("rehydration push failed: {e:#}")))
     }
 }

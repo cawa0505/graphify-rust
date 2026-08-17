@@ -115,6 +115,45 @@ impl HandoffPayload {
     pub const SCHEMA_VERSION: u32 = 1;
 }
 
+/// Validates a [`PluginMemoryEnvelope`] for structural integrity.
+///
+/// Returns `Ok(())` if all fields pass. Returns `Err(field_name, reason)` for
+/// the first violation found.
+///
+/// # Checks
+///
+/// * `format_version` must equal [`PluginMemoryEnvelope::FORMAT_VERSION`]
+/// * `workspace_key`, `plugin_id`, `record_id` must be non-empty
+/// * `created_at` must be > 0
+/// * `payload` must serialize to a non-null JSON value
+pub fn validate_envelope<T: Serialize>(env: &PluginMemoryEnvelope<T>) -> Result<(), String> {
+    if env.format_version != PluginMemoryEnvelope::<()>::FORMAT_VERSION {
+        return Err(format!(
+            "format_version: expected {}, got {}",
+            PluginMemoryEnvelope::<()>::FORMAT_VERSION,
+            env.format_version
+        ));
+    }
+    if env.workspace_key.is_empty() {
+        return Err("workspace_key: must be non-empty".into());
+    }
+    if env.plugin_id.is_empty() {
+        return Err("plugin_id: must be non-empty".into());
+    }
+    if env.record_id.is_empty() {
+        return Err("record_id: must be non-empty".into());
+    }
+    if env.created_at <= 0 {
+        return Err("created_at: must be > 0".into());
+    }
+    let payload_json = serde_json::to_value(&env.payload)
+        .map_err(|e| format!("payload: serialization failed: {e}"))?;
+    if payload_json.is_null() {
+        return Err("payload: must not be null".into());
+    }
+    Ok(())
+}
+
 /// Session-tracking container wrapping a [`HandoffPayload`] (two-tier model).
 ///
 /// Tier 1 — [`HandoffPayload`]: domain record persisted to plugin storage.
@@ -192,6 +231,72 @@ mod tests {
             "point IDs must not leak: {encoded}"
         );
         Ok(())
+    }
+
+    // --- validate_envelope ---
+
+    fn valid_env() -> PluginMemoryEnvelope<serde_json::Value> {
+        PluginMemoryEnvelope::new("ws-a", "plug-a", "rec-1", "kind", 1_800_000_000, vec![], serde_json::json!({"ok": true}))
+    }
+
+    fn assert_validation_error(env: &PluginMemoryEnvelope<serde_json::Value>, expected: &str) {
+        match validate_envelope(env) {
+            Err(msg) => assert!(msg.contains(expected), "error {msg:?} does not contain {expected:?}"),
+            Ok(()) => panic!("expected Err({expected:?}), got Ok"),
+        }
+    }
+
+    #[test]
+    fn validate_envelope_valid() {
+        assert!(validate_envelope(&valid_env()).is_ok());
+    }
+
+    #[test]
+    fn validate_envelope_bad_format_version() {
+        let mut e = valid_env();
+        e.format_version = 99;
+        assert_validation_error(&e, "format_version");
+    }
+
+    #[test]
+    fn validate_envelope_empty_workspace_key() {
+        let mut e = valid_env();
+        e.workspace_key.clear();
+        assert_validation_error(&e, "workspace_key");
+    }
+
+    #[test]
+    fn validate_envelope_empty_plugin_id() {
+        let mut e = valid_env();
+        e.plugin_id.clear();
+        assert_validation_error(&e, "plugin_id");
+    }
+
+    #[test]
+    fn validate_envelope_empty_record_id() {
+        let mut e = valid_env();
+        e.record_id.clear();
+        assert_validation_error(&e, "record_id");
+    }
+
+    #[test]
+    fn validate_envelope_created_at_zero() {
+        let mut e = valid_env();
+        e.created_at = 0;
+        assert_validation_error(&e, "created_at");
+    }
+
+    #[test]
+    fn validate_envelope_created_at_negative() {
+        let mut e = valid_env();
+        e.created_at = -1;
+        assert_validation_error(&e, "created_at");
+    }
+
+    #[test]
+    fn validate_envelope_null_payload() {
+        let e = PluginMemoryEnvelope::new("ws-a", "plug-a", "rec-1", "kind", 1_800_000_000, vec![], serde_json::Value::Null);
+        assert_validation_error(&e, "payload");
     }
 
     #[test]

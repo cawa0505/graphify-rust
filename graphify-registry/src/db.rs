@@ -4,6 +4,7 @@
 //! Graphify ecosystem. Serves as the routing and rehydration authority for
 //! workspace-scoped memory (RFC-0004 §1.1).
 
+use std::fmt;
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -59,6 +60,12 @@ impl PluginStatus {
             // constraint prevents them from being written in the first place.
             _ => Self::Unavailable,
         }
+    }
+}
+
+impl fmt::Display for PluginStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
