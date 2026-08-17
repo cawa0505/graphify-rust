@@ -22,6 +22,8 @@ graphify-plugin-review = { path = "../../GraphifyPlugins/graphify-plugin-review"
 graphify-plugin-telemetry = { path = "../../GraphifyPlugins/graphify-plugin-telemetry" }
 # 第一方內嵌 plugin：coverage* 測試覆蓋率橋接工具
 graphify-plugin-test-coverage = { path = "../../GraphifyPlugins/graphify-plugin-test-coverage" }
+# 第一方內嵌 plugin：skeleton* 檔案 AST 骨架提取工具
+graphify-plugin-skeleton = { path = "../../GraphifyPlugins/graphify-plugin-skeleton" }
 
 # Async / IO
 tokio = { version = "1.0", features = ["full"] }

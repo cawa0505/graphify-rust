@@ -22,6 +22,7 @@ use std::fmt::Write as _;
 use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
 use graphify_plugin_review::ReviewPlugin;
+use graphify_plugin_skeleton::extract_skeleton;
 use graphify_plugin_telemetry::TelemetryPlugin;
 use graphify_plugin_test_coverage::CoveragePlugin;
 use memory_query::MemoryQueryService;
@@ -668,6 +669,17 @@ fn handle_request(
                         "type": "object",
                         "properties": {}
                     }
+                },
+                {
+                    "name": "graphify_skeleton_extract",
+                    "description": "Extract a compact AST skeleton from a source file for LLM context (~300 tokens)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "Path to the source file to skeletonize" }
+                        },
+                        "required": ["path"]
+                    }
                 }
             ]);
             // A poisoned plugin lock must not hide the built-in tools;
@@ -736,6 +748,7 @@ fn handle_request(
                     ("graphify_coverage_ingest", "Import test coverage data"),
                     ("graphify_coverage_get_context", "Query coverage for a node"),
                     ("graphify_coverage_blindspots", "List nodes with <50% coverage"),
+                    ("graphify_skeleton_extract", "Extract compact AST skeleton from a source file"),
                 ];
                 builtin.sort_by(|a, b| a.0.cmp(b.0));
                 let mut text = String::from("## Graphify MCP Tools\n\n");
@@ -1043,6 +1056,44 @@ fn handle_request(
                         error: Some(JsonRpcError {
                             code: -32603,
                             message: format!("Coverage tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            // Skeleton extraction: stateless, uses graphify-core's tree-sitter
+            // parsers to produce a compact text skeleton for LLM context.
+            if tool_name == "graphify_skeleton_extract" {
+                let path = match tool_arguments.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p,
+                    None => {
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: "Missing 'path' in arguments".to_string(),
+                            }),
+                        };
+                    }
+                };
+                return match extract_skeleton(path) {
+                    Ok(skeleton) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": skeleton }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Skeleton extraction error: {e}"),
                         }),
                     },
                 };

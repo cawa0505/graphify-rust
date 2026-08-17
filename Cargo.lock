@@ -1041,6 +1041,7 @@ dependencies = [
  "graphify-plugin-handoff",
  "graphify-plugin-opendoc",
  "graphify-plugin-review",
+ "graphify-plugin-skeleton",
  "graphify-plugin-telemetry",
  "graphify-plugin-test-coverage",
  "graphify-registry",
@@ -1116,6 +1117,17 @@ dependencies = [
  "thiserror 1.0.69",
  "ureq 2.12.1",
  "uuid",
+]
+
+[[package]]
+name = "graphify-plugin-skeleton"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "graphify-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
