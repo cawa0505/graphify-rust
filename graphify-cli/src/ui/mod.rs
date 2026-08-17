@@ -8,4 +8,5 @@ pub mod theme;
 pub enum ActiveTab {
     Explorer,
     VisualGraph,
+    Monitor,
 }

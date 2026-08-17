@@ -88,6 +88,7 @@ pub enum ActionTag {
     Inspect,
     Reset,
     Log,
+    Refresh,
 }
 
 /// 動作觸發後短暫閃爍高亮的狀態
@@ -151,6 +152,13 @@ pub fn render_footer(f: &mut ratatui::Frame, tab: ActiveTab, flash: &Flash, area
             pill("R-Click", "Inspect", theme::GOLD, ActionTag::Inspect),
             pill("r", "Reset", theme::CYAN, ActionTag::Reset),
             pill("e", "Event Log", theme::MAUVE, ActionTag::Log),
+            pill("q", "Quit", theme::RED, ActionTag::Quit),
+        ][..],
+        ActiveTab::Monitor => &[
+            pill("Tab", "Back", theme::CYAN, ActionTag::Nav),
+            pill("↑↓", "Select", theme::CYAN, ActionTag::Nav),
+            pill("r", "Reset", theme::GOLD, ActionTag::Reset),
+            pill("R", "Refresh", theme::GREEN, ActionTag::Refresh),
             pill("q", "Quit", theme::RED, ActionTag::Quit),
         ][..],
     };

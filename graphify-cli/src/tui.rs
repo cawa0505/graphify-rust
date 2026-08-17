@@ -22,6 +22,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use graphify_core::{GraphOutput, Node};
+use graphify_registry::db::{PluginRegistrationRow, PluginStatus, RegistryDb, WorkspaceRow};
+use graphify_registry::registry_db_path;
 use layout::{ActionTag, Flash, LogEntry};
 use modal::{ModalItem, ModalState};
 use ratatui::{
@@ -39,7 +41,11 @@ use std::{
 };
 
 /// Tab 標題：繪製與點擊命中測試共用同一來源，避免偏移漂移
-const TAB_TITLES: [&str; 2] = [" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
+const TAB_TITLES: [&str; 3] = [
+    " 🔍 Explorer (1) ",
+    " 📊 Visual Graph (2) ",
+    " 📡 Monitor (3) ",
+];
 
 pub struct App {
     pub graph: GraphOutput,
@@ -72,6 +78,12 @@ pub struct App {
     pub log_state: ListState,
     pub flash: Flash,
     pub last_log: Option<Instant>,
+
+    // MONITOR TAB
+    pub workspaces: Vec<WorkspaceRow>,
+    pub plugins: Vec<PluginRegistrationRow>,
+    pub monitor_ws_idx: usize,
+    pub monitor_plugin_idx: usize,
 }
 
 impl App {
@@ -86,6 +98,9 @@ impl App {
 
         let initial_selected = graph.nodes.first().map(|n| &n.id);
         let canvas_coords = crate::ui::canvas::NodeCoordinates::compute(&graph, initial_selected);
+
+        // ponytail: load workspaces/plugins once at startup, [R] refreshes
+        let (workspaces, plugins) = load_monitor_data();
 
         Self {
             graph,
@@ -110,6 +125,10 @@ impl App {
             log_state: ListState::default(),
             flash: Flash::default(),
             last_log: None,
+            workspaces,
+            plugins,
+            monitor_ws_idx: 0,
+            monitor_plugin_idx: 0,
         }
     }
 
@@ -406,6 +425,103 @@ impl App {
         }
         Vec::new()
     }
+
+    // ── monitor tab helpers ──
+
+    fn monitor_down(&mut self) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        // 目前聚焦在 workspace 欄還是 plugin 欄？
+        // 如果 plugin 欄有選中項目且非最後一個，先移動 plugin 選取
+        // 否則跳到下一個 workspace
+        if !self.plugins.is_empty() && self.monitor_plugin_idx + 1 < self.plugins.len() {
+            self.monitor_plugin_idx += 1;
+        } else if self.monitor_ws_idx + 1 < self.workspaces.len() {
+            self.monitor_ws_idx += 1;
+            self.monitor_plugin_idx = 0;
+            self.load_plugins_for_selected_ws();
+        } else {
+            // 到底了，回到開頭
+            self.monitor_ws_idx = 0;
+            self.monitor_plugin_idx = 0;
+            self.load_plugins_for_selected_ws();
+        }
+    }
+
+    fn monitor_up(&mut self) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        if self.monitor_plugin_idx > 0 {
+            self.monitor_plugin_idx -= 1;
+        } else if self.monitor_ws_idx > 0 {
+            self.monitor_ws_idx -= 1;
+            self.monitor_plugin_idx = 0;
+            self.load_plugins_for_selected_ws();
+        } else {
+            // 到頂了，跳到底部
+            self.monitor_ws_idx = self.workspaces.len() - 1;
+            self.monitor_plugin_idx = 0;
+            self.load_plugins_for_selected_ws();
+        }
+    }
+
+    fn load_plugins_for_selected_ws(&mut self) {
+        if let Some(ws) = self.workspaces.get(self.monitor_ws_idx) {
+            self.plugins = RegistryDb::open(&registry_db_path())
+                .ok()
+                .and_then(|db| db.list_registrations(&ws.workspace_key).ok())
+                .unwrap_or_default();
+        } else {
+            self.plugins.clear();
+        }
+    }
+
+    fn refresh_monitor(&mut self) {
+        let (ws, plugins) = load_monitor_data();
+        self.workspaces = ws;
+        self.plugins = plugins;
+        self.monitor_ws_idx = self.monitor_ws_idx.min(self.workspaces.len().saturating_sub(1));
+        self.monitor_plugin_idx = 0;
+    }
+
+    fn reset_selected_plugin(&mut self) {
+        let Some(ws) = self.workspaces.get(self.monitor_ws_idx) else {
+            return;
+        };
+        let Some(reg) = self.plugins.get(self.monitor_plugin_idx) else {
+            return;
+        };
+        if let Ok(db) = RegistryDb::open(&registry_db_path()) {
+            let _ = db.set_status(&reg.plugin_id, &ws.workspace_key, PluginStatus::Unavailable);
+            // 重新載入 plugins 列表
+            self.plugins = db
+                .list_registrations(&ws.workspace_key)
+                .ok()
+                .unwrap_or_default();
+        }
+    }
+}
+
+/// 從 registry 載入 workspaces + plugins 清單，失敗時回傳空資訊
+/// ponytail: 單次載入，[R] 重新整理
+fn load_monitor_data() -> (Vec<WorkspaceRow>, Vec<PluginRegistrationRow>) {
+    let db = RegistryDb::open(&registry_db_path()).ok();
+    let workspaces = db
+        .as_ref()
+        .and_then(|d| d.list_workspaces().ok())
+        .unwrap_or_default();
+    // 如果有 active workspace，預載其 plugins
+    let ws_key = workspaces
+        .iter()
+        .find(|w| w.is_active)
+        .map(|w| &w.workspace_key);
+    let plugins = match (db.as_ref(), ws_key) {
+        (Some(d), Some(k)) => d.list_registrations(k).ok().unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    (workspaces, plugins)
 }
 
 pub fn run_tui(graph: GraphOutput) -> Result<()> {
@@ -515,7 +631,8 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
         KeyCode::Tab => {
             app.active_tab = match app.active_tab {
                 ActiveTab::Explorer => ActiveTab::VisualGraph,
-                ActiveTab::VisualGraph => ActiveTab::Explorer,
+                ActiveTab::VisualGraph => ActiveTab::Monitor,
+                ActiveTab::Monitor => ActiveTab::Explorer,
             };
             app.flash.trigger(ActionTag::Nav);
             app.log("Keyboard: [Tab] switch view", theme::CYAN);
@@ -530,11 +647,20 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
             app.flash.trigger(ActionTag::Nav);
             app.log("Keyboard: '2' → Visual Graph", theme::CYAN);
         }
+        KeyCode::Char('3') => {
+            app.active_tab = ActiveTab::Monitor;
+            app.flash.trigger(ActionTag::Nav);
+            app.log("Keyboard: '3' → Monitor", theme::CYAN);
+        }
         // 觸發 BFS 追蹤鏈 Modal
         KeyCode::Char('t') | KeyCode::Char('T') => app.open_bfs_modal(),
         KeyCode::Char('j') | KeyCode::Down => {
             if app.active_tab == ActiveTab::Explorer {
                 app.next();
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: 'j' navigate down", theme::CYAN);
+            } else if app.active_tab == ActiveTab::Monitor {
+                app.monitor_down();
                 app.flash.trigger(ActionTag::Nav);
                 app.log("Keyboard: 'j' navigate down", theme::CYAN);
             } else {
@@ -547,6 +673,10 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
         KeyCode::Char('k') | KeyCode::Up => {
             if app.active_tab == ActiveTab::Explorer {
                 app.previous();
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: 'k' navigate up", theme::CYAN);
+            } else if app.active_tab == ActiveTab::Monitor {
+                app.monitor_up();
                 app.flash.trigger(ActionTag::Nav);
                 app.log("Keyboard: 'k' navigate up", theme::CYAN);
             } else {
@@ -592,6 +722,17 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                 app.zoom = 1.0;
                 app.flash.trigger(ActionTag::Reset);
                 app.log("Keyboard: 'r' reset view", theme::CYAN);
+            } else if app.active_tab == ActiveTab::Monitor {
+                // 小寫 r: reset plugin；大寫 R: refresh 全部
+                if key.code == KeyCode::Char('R') {
+                    app.refresh_monitor();
+                    app.flash.trigger(ActionTag::Refresh);
+                    app.log("Keyboard: 'R' refresh monitor", theme::GREEN);
+                } else {
+                    app.reset_selected_plugin();
+                    app.flash.trigger(ActionTag::Reset);
+                    app.log("Keyboard: 'r' reset plugin", theme::GOLD);
+                }
             }
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
@@ -694,10 +835,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     for (i, title) in TAB_TITLES.iter().enumerate() {
                         let w = ratatui::text::Line::from(*title).width();
                         if (col..col + w).contains(&usize::from(click_col)) {
-                            clicked = Some(if i == 0 {
-                                ActiveTab::Explorer
-                            } else {
-                                ActiveTab::VisualGraph
+                            clicked = Some(match i {
+                                0 => ActiveTab::Explorer,
+                                1 => ActiveTab::VisualGraph,
+                                _ => ActiveTab::Monitor,
                             });
                             break;
                         }
@@ -707,6 +848,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                         let tab_name = match tab {
                             ActiveTab::Explorer => "Explorer",
                             ActiveTab::VisualGraph => "VisualGraph",
+                            ActiveTab::Monitor => "Monitor",
                         };
                         app.active_tab = tab;
                         app.log(
@@ -847,6 +989,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     let active_idx = match app.active_tab {
         ActiveTab::Explorer => 0,
         ActiveTab::VisualGraph => 1,
+        ActiveTab::Monitor => 2,
     };
     let tabs = Tabs::new(TAB_TITLES)
         .block(
@@ -870,10 +1013,11 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     f.render_widget(tabs, chrome.tabs);
     app.last_tabs_area = Some(chrome.tabs);
 
-    // 2. 主視圖面板 (70%)
+    // 2. 主視圖面板 (70% or 100%)
     match app.active_tab {
         ActiveTab::Explorer => draw_explorer(f, app, chrome.main),
         ActiveTab::VisualGraph => draw_visual_graph(f, app, chrome.main),
+        ActiveTab::Monitor => draw_monitor(f, app, chrome.main),
     }
 
     // 3. 事件日誌面板 (30%) — 'e' 隱藏時主視圖佔滿 100%
@@ -910,6 +1054,104 @@ fn draw_visual_graph(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         app.pan_y,
         area,
     );
+}
+
+#[allow(clippy::too_many_lines)]
+fn draw_monitor(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    // 左半邊：workspace 列表，右半邊：plugin 列表
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+
+    // ── workspace list ──
+    let ws_items: Vec<ListItem> = app
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(i, ws)| {
+            let active_mark = if ws.is_active { " ◉ " } else { " ○ " };
+            let style = if i == app.monitor_ws_idx {
+                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            let plugin_count = if ws.is_active {
+                format!("  plugins: {}", app.plugins.len())
+            } else {
+                String::new()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(active_mark, style),
+                Span::styled(&ws.root_path, style),
+                Span::styled(plugin_count, Style::default().fg(theme::SUBTLE)),
+            ]))
+        })
+        .collect();
+    let ws_list = List::new(ws_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::SURFACE_HI))
+            .title(Line::from(Span::styled(
+                " 📁 Workspaces ",
+                Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+    );
+    f.render_widget(ws_list, chunks[0]);
+
+    // ── plugin list for selected workspace ──
+    let plugin_items: Vec<ListItem> = if app.plugins.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No plugins registered.",
+            Style::default().fg(theme::SUBTLE),
+        )))]
+    } else {
+        app.plugins
+            .iter()
+            .enumerate()
+            .map(|(i, reg)| {
+                let (icon, color) = match reg.status {
+                    PluginStatus::Healthy => ("●", theme::GREEN),
+                    PluginStatus::Degraded => ("◐", theme::GOLD),
+                    PluginStatus::Unavailable => ("○", theme::SUBTLE),
+                    PluginStatus::Quarantined => ("⊘", theme::RED),
+                };
+                let selected = i == app.monitor_plugin_idx;
+                let name_style = if selected {
+                    Style::default()
+                        .fg(theme::CYAN)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::TEXT)
+                };
+                let last_synced = if reg.last_synced_at > 0 {
+                    format!("last: {}", reg.last_synced_at)
+                } else {
+                    "last: ──".to_string()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                    Span::styled(&reg.plugin_id, name_style),
+                    Span::raw("  "),
+                    Span::styled(last_synced, Style::default().fg(theme::SUBTLE)),
+                ]))
+            })
+            .collect()
+    };
+    let plugin_list = List::new(plugin_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::SURFACE_HI))
+            .title(Line::from(Span::styled(
+                " 🔌 Plugins ",
+                Style::default()
+                    .fg(theme::MAUVE)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+    );
+    f.render_widget(plugin_list, chunks[1]);
 }
 
 #[allow(clippy::too_many_lines)]
