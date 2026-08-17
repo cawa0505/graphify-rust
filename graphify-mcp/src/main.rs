@@ -18,6 +18,7 @@ use graphify_core::plugin::{GraphifyPlugin, derive_workspace_key};
 use graphify_core::types::{Edge, GraphMetadata, GraphOutput, Node, NodeId};
 use graphify_llm::config::PluginsConfig;
 use graphify_plugin_handoff::relay::SaveArgs;
+use std::fmt::Write as _;
 use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
 use graphify_plugin_review::ReviewPlugin;
@@ -37,6 +38,16 @@ use types::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, PathParams, QueryNodeParams, QueryParams,
     ReindexParams, TracePathParams,
 };
+
+/// Helper to create a standard MCP tool registration JSON object.
+/// Reduces boilerplate in the tools/list handler.
+fn register_tool(name: &str, desc: &str, schema: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "description": desc,
+        "inputSchema": schema,
+    })
+}
 
 struct GraphState {
     graph_data: GraphOutput,
@@ -302,7 +313,7 @@ fn build_telemetry_plugin() -> TelemetryPlugin {
 }
 
 /// Build the embedded coverage plugin: same global-registry pattern as
-/// telemetry (coverage_bindings 在 graphify.db）。LCOV/JSON 文字 ingest，
+/// telemetry (`coverage_bindings` 在 graphify.db）。LCOV/JSON 文字 ingest，
 /// 走 line→symbol 解析綁定到 canonical node id。
 fn build_coverage_plugin() -> CoveragePlugin {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -341,19 +352,19 @@ fn handle_request(
         },
         "tools/list" => {
             let mut tools = serde_json::json!([
+                register_tool("graphify_help", "List all available tools with descriptions", serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                })),
+                register_tool("graphify_graph_query", "BFS traversal of the knowledge graph (legacy compatibility)", serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "question": { "type": "string" }
+                    },
+                    "required": ["question"]
+                })),
                 {
-                    "name": "graphify_query",
-                    "description": "BFS traversal of the knowledge graph (legacy compatibility)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "question": { "type": "string" }
-                        },
-                        "required": ["question"]
-                    }
-                },
-                {
-                    "name": "graphify_path",
+                    "name": "graphify_graph_path",
                     "description": "Find shortest path between two nodes (legacy compatibility)",
                     "inputSchema": {
                         "type": "object",
@@ -365,7 +376,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "graph_summary",
+                    "name": "graphify_graph_summary",
                     "description": "Get high-level topology summary",
                     "inputSchema": {
                         "type": "object",
@@ -373,7 +384,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "graph_query_node",
+                    "name": "graphify_graph_query_node",
                     "description": "Query nodes by ID with depth",
                     "inputSchema": {
                         "type": "object",
@@ -385,7 +396,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "graph_trace_path",
+                    "name": "graphify_graph_trace_path",
                     "description": "Find shortest path between two nodes",
                     "inputSchema": {
                         "type": "object",
@@ -397,7 +408,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "graph_reindex",
+                    "name": "graphify_graph_reindex",
                     "description": "Reindex a file into the graph",
                     "inputSchema": {
                         "type": "object",
@@ -408,7 +419,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "graphify_notify_plugins",
+                    "name": "graphify_plugin_notify",
                     "description": "Manually broadcast a graph_updated notification to all healthy plugin subprocesses (kind: indexed|extracted|manual)",
                     "inputSchema": {
                         "type": "object",
@@ -424,15 +435,15 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "workspace_key": { "type": "string" },
+                            "workspace_key": { "type": "string", "description": "Workspace key (auto-detected from current directory when omitted)" },
                             "query": { "type": "string" },
                             "limit": { "type": "integer", "default": 10 }
                         },
-                        "required": ["workspace_key", "query"]
+                        "required": ["query"]
                     }
                 },
                 {
-                    "name": "relayInit",
+                    "name": "graphify_relay_init",
                     "description": "Initialize a relay.json at the current workspace to start cross-session / cross-repo state handoff",
                     "inputSchema": {
                         "type": "object",
@@ -444,7 +455,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "relaySave",
+                    "name": "graphify_relay_save",
                     "description": "Save the current repo's volatile state, phase, confidence and next-step into relay.json and render RESUME.md",
                     "inputSchema": {
                         "type": "object",
@@ -462,19 +473,25 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "relayClose",
-                    "description": "Run the closing ritual: consistency check, spec diff, next_step.md, atomic commit, and a best-effort HandoffSnapshot into the registry",
+                    "name": "graphify_relay_close",
+                    "description": "Auto-save state and run the closing ritual: consistency check, spec diff, next_step.md, atomic commit, and a best-effort HandoffSnapshot into the registry. Accepts all relay_save params for one-shot close.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "repo": { "type": "string" },
-                            "next": { "type": "string" }
+                            "repo": { "type": "string", "description": "Repo name (default: cwd basename)" },
+                            "next": { "type": "string", "description": "Next session starter text" },
+                            "role": { "type": "string", "description": "Role (e.g. backend/frontend/infra)" },
+                            "phase": { "type": "string", "description": "Active phase" },
+                            "volatile": { "type": "string", "description": "Volatile state summary" },
+                            "conf": { "type": "number", "description": "Confidence score (1-5)" },
+                            "debt": { "type": "string", "description": "Comma-separated debt tags" },
+                            "kind": { "type": "string", "description": "Template kind (backend/frontend/infra)" }
                         },
                         "required": []
                     }
                 },
                 {
-                    "name": "relaySwitch",
+                    "name": "graphify_relay_switch",
                     "description": "Pass the baton to another registered repo and render its RESUME handover",
                     "inputSchema": {
                         "type": "object",
@@ -486,7 +503,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "relayResume",
+                    "name": "graphify_relay_resume",
                     "description": "Render the RESUME handover for the active (or given) repo — used to bootstrap a new session",
                     "inputSchema": {
                         "type": "object",
@@ -498,7 +515,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "relayStatus",
+                    "name": "graphify_relay_status",
                     "description": "Show relay summary: repos, active baton, spec drift, last update",
                     "inputSchema": {
                         "type": "object",
@@ -506,7 +523,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "relayAdd",
+                    "name": "graphify_relay_add",
                     "description": "Ingest an existing TODO/handoff doc from an old project into relay.json: stores the raw text and parses each non-empty line into open_threads",
                     "inputSchema": {
                         "type": "object",
@@ -518,7 +535,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "opendocIndex",
+                    "name": "graphify_opendoc_index",
                     "description": "Index all `.md` spec blocks in the current workspace: parses markdown, extracts `# Symbol:` annotations, persists spec↔symbol hard links into the opendoc_links SQLite registry (Layer 1, no OpenDocuments dependency)",
                     "inputSchema": {
                         "type": "object",
@@ -533,7 +550,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "opendocGetContext",
+                    "name": "graphify_opendoc_get_context",
                     "description": "Given a code symbol (e.g. `crate::auth::verify_token`), return the spec blocks documenting it (Layer 1 hard-link priority; falls back to Layer 2 vector search only when a workspace mapping is set and a backend is injected)",
                     "inputSchema": {
                         "type": "object",
@@ -544,7 +561,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "opendocAuditDrift",
+                    "name": "graphify_opendoc_audit_drift",
                     "description": "Audit doc-side drift: for each indexed spec↔symbol link, re-read the source doc, re-parse the block, and compare its signature (sha1) against the indexed one. Returns per-link status: UpToDate / DocChanged / DocMissing",
                     "inputSchema": {
                         "type": "object",
@@ -553,7 +570,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "reviewIngest",
+                    "name": "graphify_review_ingest",
                     "description": "Import a CRG IngestPayload JSON file into the review_bindings registry: each review point is line→symbol resolved against the cached GraphOutput (Slice 0 file-based import, no CRG dependency)",
                     "inputSchema": {
                         "type": "object",
@@ -564,7 +581,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "reviewGetContext",
+                    "name": "graphify_review_get_context",
                     "description": "Query unresolved reviews bound to a canonical node id (e.g. `src/auth.rs:function:verify_token`)",
                     "inputSchema": {
                         "type": "object",
@@ -575,7 +592,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "reviewResolve",
+                    "name": "graphify_review_resolve",
                     "description": "Mark a review as resolved by its review id",
                     "inputSchema": {
                         "type": "object",
@@ -587,7 +604,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "reviewSearchCrg",
+                    "name": "graphify_review_search_crg",
                     "description": "Call CRG detect_changes_tool (CRG_BASE_URL) and bind its top-risk changed functions as review points (line→symbol via cached GraphOutput). Optional `base` git ref (default HEAD~1) widens the diff window.",
                     "inputSchema": {
                         "type": "object",
@@ -598,7 +615,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "telemetryIngest",
+                    "name": "graphify_telemetry_ingest",
                     "description": "Import telemetry metrics into the telemetry_bindings registry: each metric is line→symbol (or symbol→node, for Draco) resolved against the cached GraphOutput and flagged is_hotspot when p99 > 500ms or alloc > 5MB (dynamic thresholds, env TELEMETRY_HOTSPOT_P99_MS / TELEMETRY_HOTSPOT_ALLOC_BYTES). source=\"file\" 讀本地 IngestPayload JSON；source=\"draco-mcp\" 主動輪詢 Draco fetch_top_hotspots()（Top 10）",
                     "inputSchema": {
                         "type": "object",
@@ -610,7 +627,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "telemetryGetContext",
+                    "name": "graphify_telemetry_get_context",
                     "description": "Query telemetry bindings for a canonical node id (e.g. `src/db/query.rs:function:query_users`): p99 latency / alloc / call rate / hotspot flag; include_impact_radius 於 Slice 2 展開 Upstream callers BFS",
                     "inputSchema": {
                         "type": "object",
@@ -622,7 +639,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "coverageIngest",
+                    "name": "graphify_coverage_ingest",
                     "description": "測試覆蓋率資料匯入：LCOV 文字或 cobertura JSON。line→symbol 綁定後存入 coverage_bindings（graphify.db）；每次 ingest 以快照取代舊資料。",
                     "inputSchema": {
                         "type": "object",
@@ -634,7 +651,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "coverageGetContext",
+                    "name": "graphify_coverage_get_context",
                     "description": "查詢某個 canonical node id 的覆蓋率綁定（covered_lines / total_lines / line_rate）",
                     "inputSchema": {
                         "type": "object",
@@ -645,7 +662,7 @@ fn handle_request(
                     }
                 },
                 {
-                    "name": "coverageBlindspots",
+                    "name": "graphify_coverage_blindspots",
                     "description": "列出所有覆蓋率 < 50% 的盲區節點",
                     "inputSchema": {
                         "type": "object",
@@ -685,8 +702,67 @@ fn handle_request(
 
             let tool_arguments = params.get("arguments").cloned().unwrap_or_default();
 
+            // Built-in help tool: returns a formatted listing of all tools.
+            if tool_name == "graphify_help" {
+                let host = plugin_host.borrow();
+                let plugin_tools = host.list_tools();
+                drop(host);
+                let mut builtin = vec![
+                    ("graphify_help", "List all available tools with descriptions"),
+                    ("graphify_graph_query", "BFS traversal of the knowledge graph (legacy compatibility)"),
+                    ("graphify_graph_path", "Find shortest path between two nodes (legacy compatibility)"),
+                    ("graphify_graph_summary", "Get high-level topology summary"),
+                    ("graphify_graph_query_node", "Query nodes by ID with depth"),
+                    ("graphify_graph_trace_path", "Find shortest path between two nodes"),
+                    ("graphify_graph_reindex", "Reindex a file into the graph"),
+                    ("graphify_plugin_notify", "Manually broadcast a graph_updated notification"),
+                    ("graphify_memory_query", "Semantic memory query over the knowledge graph"),
+                    ("graphify_relay_init", "Initialize relay.json for cross-session handoff"),
+                    ("graphify_relay_save", "Save session state to relay.json"),
+                    ("graphify_relay_close", "Close relay session"),
+                    ("graphify_relay_switch", "Switch to another registered repo"),
+                    ("graphify_relay_resume", "Resume a relay session"),
+                    ("graphify_relay_status", "Show relay summary"),
+                    ("graphify_relay_add", "Ingest TODO/handoff doc into relay.json"),
+                    ("graphify_opendoc_index", "Index spec blocks in workspace"),
+                    ("graphify_opendoc_get_context", "Get spec blocks for a code symbol"),
+                    ("graphify_opendoc_audit_drift", "Audit doc-side drift"),
+                    ("graphify_review_ingest", "Import CRG review payload"),
+                    ("graphify_review_get_context", "Query unresolved reviews"),
+                    ("graphify_review_resolve", "Mark a review as resolved"),
+                    ("graphify_review_search_crg", "Search CRG for changed functions"),
+                    ("graphify_telemetry_ingest", "Import telemetry metrics"),
+                    ("graphify_telemetry_get_context", "Query telemetry bindings"),
+                    ("graphify_coverage_ingest", "Import test coverage data"),
+                    ("graphify_coverage_get_context", "Query coverage for a node"),
+                    ("graphify_coverage_blindspots", "List nodes with <50% coverage"),
+                ];
+                builtin.sort_by(|a, b| a.0.cmp(b.0));
+                let mut text = String::from("## Graphify MCP Tools\n\n");
+                for (name, desc) in &builtin {
+                    let _ = writeln!(text, "- **`{name}`**: {desc}");
+                }
+                // Plugin tools from the host (returns Vec<Value>)
+                if !plugin_tools.is_empty() {
+                    text.push_str("\n### Plugin Tools\n\n");
+                    for t in &plugin_tools {
+                        let n = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let d = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        let _ = writeln!(text, "- **`{n}`**: {d}");
+                    }
+                }
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id,
+                    result: Some(serde_json::json!({
+                        "content": [{ "type": "text", "text": text }]
+                    })),
+                    error: None,
+                };
+            }
+
             // This is a built-in gateway tool, not a namespaced plugin tool.
-            if tool_name == "graphify_notify_plugins" {
+            if tool_name == "graphify_plugin_notify" {
                 let kind = tool_arguments
                     .get("kind")
                     .and_then(|value| value.as_str())
@@ -763,8 +839,8 @@ fn handle_request(
             // PROTOCOL.md, errors surface as tool errors (never a panic).
             if matches!(
                 tool_name,
-                "relayInit" | "relaySave" | "relayClose" | "relaySwitch" | "relayResume"
-                    | "relayStatus" | "relayAdd"
+                "graphify_relay_init" | "graphify_relay_save" | "graphify_relay_close" | "graphify_relay_switch" | "graphify_relay_resume"
+                    | "graphify_relay_status" | "graphify_relay_add"
             ) {
                 let mut relay = relay.borrow_mut();
                 return match run_relay_tool(tool_name, &tool_arguments, &mut relay) {
@@ -794,7 +870,7 @@ fn handle_request(
             // Embedded opendoc tools: the spec↔code link registry is a pure file/SQLite
             // domain (Layer 1, zero OD dependency); Layer 2 only activates when
             // both a backend and a workspace mapping are configured.
-            if matches!(tool_name, "opendocIndex" | "opendocGetContext" | "opendocAuditDrift") {
+            if matches!(tool_name, "graphify_opendoc_index" | "graphify_opendoc_get_context" | "graphify_opendoc_audit_drift") {
                 let opendoc = opendoc.borrow();
                 return match run_opendoc_tool(tool_name, &tool_arguments, &opendoc) {
                     Ok(val) => JsonRpcResponse {
@@ -829,7 +905,7 @@ fn handle_request(
             // 解析；保證 line 升維至 canonical NodeId 時有圖譜可對齊。
             if matches!(
                 tool_name,
-                "reviewIngest" | "reviewGetContext" | "reviewResolve" | "reviewSearchCrg"
+                "graphify_review_ingest" | "graphify_review_get_context" | "graphify_review_resolve" | "graphify_review_search_crg"
             ) {
                 // 所有 review 工具都需要 graph 快取做 line→symbol 升維；
                 // 餵 graph 後再進 dispatch（reviewIngest 之外的工具也需圖譜）。
@@ -878,8 +954,8 @@ fn handle_request(
             // 前先經由 sync_toon 餵入已索引的 GraphOutput，line→symbol
             // 升維時才有圖譜可對齊。source="file" 走路徑；source="draco-mcp"
             // 走 Draco 輪詢（在 run_telemetry_tool 分派）。
-            if matches!(tool_name, "telemetryIngest" | "telemetryGetContext") {
-                if tool_name == "telemetryIngest" {
+            if matches!(tool_name, "graphify_telemetry_ingest" | "graphify_telemetry_get_context") {
+                if tool_name == "graphify_telemetry_ingest" {
                     let state = match state_lock.read() {
                         Ok(s) => s,
                         Err(_) => {
@@ -927,9 +1003,9 @@ fn handle_request(
             // coverageIngest 前先餵 graph 讓 line→symbol 升維有圖譜可對齊。
             if matches!(
                 tool_name,
-                "coverageIngest" | "coverageGetContext" | "coverageBlindspots"
+                "graphify_coverage_ingest" | "graphify_coverage_get_context" | "graphify_coverage_blindspots"
             ) {
-                if tool_name == "coverageIngest" {
+                if tool_name == "graphify_coverage_ingest" {
                     let state = match state_lock.read() {
                         Ok(s) => s,
                         Err(_) => {
@@ -1002,7 +1078,7 @@ fn handle_request(
                     // carries the workspace_key routing key so plugins can
                     // correlate the update with the workspace they were bound
                     // to; failures are isolated inside the host.
-                    if tool_name == "graph_reindex" {
+                    if tool_name == "graphify_graph_reindex" {
                         let workspace_key = graphify_core::derive_workspace_key(
                             std::env::current_dir().unwrap_or_default(),
                         );
@@ -1065,12 +1141,12 @@ fn run_relay_tool(
 ) -> Result<serde_json::Value> {
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
     let out = match name {
-        "relayInit" => {
+        "graphify_relay_init" => {
             let project = get_str("project_context")
                 .ok_or_else(|| anyhow!("Missing 'project_context'"))?;
             relay.relay_init(project, get_str("kind"))?
         }
-        "relaySave" => relay.relay_save(SaveArgs {
+        "graphify_relay_save" => relay.relay_save(SaveArgs {
             repo: get_str("repo"),
             role: get_str("role"),
             active_phase: get_str("phase"),
@@ -1080,14 +1156,43 @@ fn run_relay_tool(
             debt_tag: get_str("debt"),
             kind: get_str("kind"),
         })?,
-        "relayClose" => relay.relay_close(get_str("repo"), get_str("next"))?,
-        "relaySwitch" => {
+        "graphify_relay_close" => {
+            let repo = get_str("repo");
+            // Auto-save before close if any state params are provided
+            let role = get_str("role");
+            let phase = get_str("phase");
+            let volatile = get_str("volatile");
+            let confidence = args.get("conf").and_then(serde_json::Value::as_f64);
+            let debt = get_str("debt");
+            let kind = get_str("kind");
+            let next = get_str("next");
+            if role.is_some()
+                || phase.is_some()
+                || volatile.is_some()
+                || confidence.is_some()
+                || debt.is_some()
+                || kind.is_some()
+            {
+                relay.relay_save(SaveArgs {
+                    repo,
+                    role,
+                    active_phase: phase,
+                    volatile_state: volatile,
+                    confidence,
+                    next_session_starter: next,
+                    debt_tag: debt,
+                    kind,
+                })?;
+            }
+            relay.relay_close(repo, next)?
+        }
+        "graphify_relay_switch" => {
             let repo = get_str("repo").ok_or_else(|| anyhow!("Missing 'repo'"))?;
             relay.relay_switch(repo, get_str("kind"))?
         }
-        "relayResume" => relay.relay_resume(get_str("repo"), get_str("kind"))?,
-        "relayStatus" => relay.relay_status()?,
-        "relayAdd" => {
+        "graphify_relay_resume" => relay.relay_resume(get_str("repo"), get_str("kind"))?,
+        "graphify_relay_status" => relay.relay_status()?,
+        "graphify_relay_add" => {
             let file = get_str("file").ok_or_else(|| anyhow!("Missing 'file'"))?;
             relay.relay_add(Path::new(file), get_str("repo"))?
         }
@@ -1106,7 +1211,7 @@ fn run_opendoc_tool(
     use std::fmt::Write as _;
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
     match name {
-        "opendocIndex" => {
+        "graphify_opendoc_index" => {
             let doc_paths: Vec<String> = args
                 .get("doc_paths")
                 .and_then(|v| v.as_array())
@@ -1127,7 +1232,7 @@ fn run_opendoc_tool(
             };
             Ok(format!("[opendoc] indexed: {n} link rows"))
         }
-        "opendocGetContext" => {
+        "graphify_opendoc_get_context" => {
             let symbol = get_str("symbol")
                 .ok_or_else(|| anyhow!("Missing 'symbol'"))?
                 .to_string();
@@ -1148,7 +1253,7 @@ fn run_opendoc_tool(
                 Ok(out)
             }
         }
-        "opendocAuditDrift" => {
+        "graphify_opendoc_audit_drift" => {
             let items = opendoc
                 .audit_drift()
                 .map_err(|e| anyhow!("opendoc audit_drift: {e}"))?;
@@ -1182,14 +1287,14 @@ fn run_review_tool(
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
     let wk = review.get_workspace_key().to_string();
     match name {
-        "reviewIngest" => {
+        "graphify_review_ingest" => {
             let path = get_str("payload").ok_or_else(|| anyhow!("Missing 'payload'"))?;
             let (bound, orphan) = review
                 .review_ingest_file(Path::new(path))
                 .map_err(|e| anyhow!("review ingest_file: {e}"))?;
             Ok(format!("[review] {path}: {bound} bound, {orphan} orphan lines"))
         }
-        "reviewGetContext" => {
+        "graphify_review_get_context" => {
             let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
             let (_node_id, rows) = review
                 .review_get_context(&wk, node, false)
@@ -1209,7 +1314,7 @@ fn run_review_tool(
                 Ok(out)
             }
         }
-        "reviewResolve" => {
+        "graphify_review_resolve" => {
             let rid = get_str("review_id").ok_or_else(|| anyhow!("Missing 'review_id'"))?;
             let reason = get_str("reason").unwrap_or_default();
             let updated = review
@@ -1221,7 +1326,7 @@ fn run_review_tool(
                 Ok(format!("[review] {rid}: not found"))
             }
         }
-        "reviewSearchCrg" => {
+        "graphify_review_search_crg" => {
             let base = get_str("base");
             let (node_ids, orphan) = review
                 .review_search_crg(base)
@@ -1250,7 +1355,7 @@ fn run_telemetry_tool(
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
     let wk = telemetry.get_workspace_key().to_string();
     match name {
-        "telemetryIngest" => {
+        "graphify_telemetry_ingest" => {
             let source = get_str("source").ok_or_else(|| anyhow!("Missing 'source'"))?;
             match source {
                 "file" => {
@@ -1280,7 +1385,7 @@ fn run_telemetry_tool(
                 }
             }
         }
-        "telemetryGetContext" => {
+        "graphify_telemetry_get_context" => {
             let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
             let include_radius = args
                 .get("include_impact_radius")
@@ -1323,7 +1428,7 @@ fn run_coverage_tool(
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
     let wk = coverage.get_workspace_key().to_string();
     match name {
-        "coverageIngest" => {
+        "graphify_coverage_ingest" => {
             let format = get_str("format").ok_or_else(|| anyhow!("Missing 'format'"))?;
             let data = get_str("data").ok_or_else(|| anyhow!("Missing 'data'"))?;
             let summary = match format {
@@ -1340,7 +1445,7 @@ fn run_coverage_tool(
                 summary.bound_nodes, summary.total_lines, summary.covered_lines, summary.blindspots,
             ))
         }
-        "coverageGetContext" => {
+        "graphify_coverage_get_context" => {
             let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
             let db = coverage
                 .db()
@@ -1356,7 +1461,7 @@ fn run_coverage_tool(
                 None => Ok(format!("[coverage] {node}: no coverage data")),
             }
         }
-        "coverageBlindspots" => {
+        "graphify_coverage_blindspots" => {
             let db = coverage
                 .db()
                 .map_err(|e| anyhow!("coverage db: {e}"))?;
@@ -1367,10 +1472,9 @@ fn run_coverage_tool(
                 let mut out = format!("[coverage] {} blindspot(s):\n", spots.len());
                 for b in &spots {
                     let pct = b.line_rate * 100.0;
-                    out.push_str(&format!(
-                        "  {}\t{}/{} ({:.1}%)\n",
+                    let _ = writeln!(out, "  {}\t{}/{} ({:.1}%)",
                         b.canonical_node_id, b.covered_lines, b.total_lines, pct
-                    ));
+                    );
                 }
                 Ok(out)
             }
@@ -1385,7 +1489,7 @@ fn handle_tool_call(
     state_lock: Arc<RwLock<GraphState>>,
 ) -> Result<serde_json::Value> {
     match name {
-        "graphify_query" => {
+        "graphify_graph_query" => {
             let params: QueryParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
             let node_id = NodeId(params.question.clone());
@@ -1395,7 +1499,7 @@ fn handle_tool_call(
             let res = query_bfs(&r_state.graph, &r_state.node_map, &node_id_resolved, 2)?;
             Ok(serde_json::to_value(res)?)
         }
-        "graphify_path" => {
+        "graphify_graph_path" => {
             let params: PathParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
             let src_resolved =
@@ -1413,7 +1517,7 @@ fn handle_tool_call(
             )?;
             Ok(serde_json::to_value(path_opt)?)
         }
-        "graph_summary" => {
+        "graphify_graph_summary" => {
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
             // Return top-level module topology, core structs and classes
             let mut summary_nodes = Vec::new();
@@ -1450,7 +1554,7 @@ fn handle_tool_call(
                 "summary_edges": summary_edges,
             }))
         }
-        "graph_query_node" => {
+        "graphify_graph_query_node" => {
             let params: QueryNodeParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
             let node_id = NodeId(params.node_id.clone());
@@ -1461,7 +1565,7 @@ fn handle_tool_call(
             let res = query_bfs(&r_state.graph, &r_state.node_map, &node_id_resolved, depth)?;
             Ok(serde_json::to_value(res)?)
         }
-        "graph_trace_path" => {
+        "graphify_graph_trace_path" => {
             let params: TracePathParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
             let src_resolved =
@@ -1479,7 +1583,7 @@ fn handle_tool_call(
             )?;
             Ok(serde_json::to_value(path_opt)?)
         }
-        "graph_reindex" => {
+        "graphify_graph_reindex" => {
             let params: ReindexParams = serde_json::from_value(args)?;
             let file_path = Path::new(&params.file_path);
             if !file_path.exists() {
@@ -1554,7 +1658,12 @@ mod tests {
     fn test_load_failure_falls_back_to_empty_graph() -> Result<()> {
         // A corrupt graph file must not kill the server: load() reports the
         // error, and empty() still produces a usable, queryable state.
-        let dir = std::env::temp_dir().join(format!("graphify-mcp-test-{}", std::process::id()));
+        let suffix: String = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string();
+        let dir = std::env::temp_dir().join(format!("graphify-mcp-test-{suffix}"));
         let out = dir.join("graphify-out");
         fs::create_dir_all(&out)?;
         let mut f = fs::File::create(out.join("graph.json"))?;
@@ -1582,10 +1691,12 @@ mod tests {
         // Full relay lifecycle through the MCP dispatch: init -> save ->
         // status -> close. Registry path is injected to a temp file so the
         // close snapshot stays hermetic.
-        let dir = std::env::temp_dir().join(format!(
-            "graphify-mcp-relay-test-{}",
-            std::process::id()
-        ));
+        let suffix: String = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string();
+        let dir = std::env::temp_dir().join(format!("graphify-mcp-relay-test-{suffix}"));
         fs::create_dir_all(&dir)?;
         let cwd = std::env::current_dir()?;
         std::env::set_current_dir(&dir)?;
@@ -1595,14 +1706,14 @@ mod tests {
         let empty_args = serde_json::json!({});
 
         let init_out = run_relay_tool(
-            "relayInit",
+            "graphify_relay_init",
             &serde_json::json!({ "project_context": "test project" }),
             &mut plugin,
         )?;
         assert!(init_out.as_str().is_some_and(|s| s.contains("Initialized relay at")));
 
         let save_out = run_relay_tool(
-            "relaySave",
+            "graphify_relay_save",
             &serde_json::json!({
                 "repo": "graphify-mcp",
                 "phase": "testing",
@@ -1613,18 +1724,73 @@ mod tests {
         )?;
         assert!(save_out.as_str().is_some_and(|s| s.contains("graphify-mcp")));
 
-        let status_out = run_relay_tool("relayStatus", &empty_args, &mut plugin)?;
+        let status_out = run_relay_tool("graphify_relay_status", &empty_args, &mut plugin)?;
         assert!(status_out.as_str().is_some_and(|s| s.contains("graphify-mcp")));
 
         let close_out = run_relay_tool(
-            "relayClose",
+            "graphify_relay_close",
             &serde_json::json!({ "repo": "graphify-mcp", "next": "done" }),
             &mut plugin,
         )?;
         assert!(close_out.as_str().is_some_and(|s| s.contains("Consistency: OK")));
 
         // relayStatus after close must not error (baton was on graphify-mcp).
-        assert!(run_relay_tool("relayStatus", &empty_args, &mut plugin)?.as_str().is_some());
+        assert!(run_relay_tool("graphify_relay_status", &empty_args, &mut plugin)?.as_str().is_some());
+
+        std::env::set_current_dir(cwd)?;
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_relay_close_auto_saves_before_close() -> Result<()> {
+        // relay_close with save params must auto-save state before closing,
+        // so callers can skip the explicit relay_save call.
+        let suffix: String = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string();
+        let dir = std::env::temp_dir().join(format!("graphify-mcp-relay-autosave-test-{suffix}"));
+        fs::create_dir_all(&dir)?;
+        let cwd = std::env::current_dir()?;
+        std::env::set_current_dir(&dir)?;
+
+        let mut plugin = RelayPlugin::new().with_registry_path(dir.join("graphify-test.db"));
+        plugin.bind_for_cli(&dir);
+        let empty_args = serde_json::json!({});
+
+        let init_out = run_relay_tool(
+            "graphify_relay_init",
+            &serde_json::json!({ "project_context": "auto-save test" }),
+            &mut plugin,
+        )?;
+        assert!(init_out.as_str().is_some_and(|s| s.contains("Initialized relay at")));
+
+        // Close with all save params in one shot — no relay_save called first
+        let close_out = run_relay_tool(
+            "graphify_relay_close",
+            &serde_json::json!({
+                "repo": "test-repo",
+                "role": "backend",
+                "phase": "dev",
+                "volatile": "正在做 auto-save",
+                "conf": 4.5,
+                "debt": "需補測試,重構 extractor",
+                "next": "繼續 auto-save 測試",
+                "kind": "backend"
+            }),
+            &mut plugin,
+        )?;
+        let out_text = close_out.as_str().unwrap_or("");
+        assert!(out_text.contains("Closing ritual for \"test-repo\"."), "{out_text}");
+        assert!(out_text.contains("Consistency: OK"), "{out_text}");
+
+        // Verify state was saved: status should show the repo with saved params
+        let status_out = run_relay_tool("graphify_relay_status", &empty_args, &mut plugin)?;
+        let status_text = status_out.as_str().unwrap_or("");
+        assert!(status_text.contains("test-repo"), "{status_text}");
+        assert!(status_text.contains("dev"), "{status_text}");
 
         std::env::set_current_dir(cwd)?;
         fs::remove_dir_all(&dir)?;

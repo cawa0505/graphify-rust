@@ -6,6 +6,7 @@
 //! (collection names, point IDs, credentials, embedding-provider config).
 
 use anyhow::{Result, anyhow};
+use graphify_core::derive_workspace_key;
 use graphify_llm::config::LLMConfig;
 use graphify_memory::{MemoryQueryInput, MemoryQueryResult, QdrantMemoryStore};
 use serde_json::Value;
@@ -79,13 +80,22 @@ impl MemoryQueryService {
 
 /// Validates and normalizes the tool arguments into a scoped query input.
 ///
+/// `workspace_key` is optional: when omitted, auto-detects from the current
+/// directory using the same hash as the graphify index/extract pipeline.
+///
 /// # Errors
-/// Returns an error when `workspace_key` or `query` is missing or empty.
+/// Returns an error when `query` is missing or empty, or when both
+/// `workspace_key` and auto-detection fail.
 fn parse_input(args: &Value) -> Result<MemoryQueryInput> {
-    let workspace_key = args
-        .get("workspace_key")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing required argument: workspace_key"))?;
+    let workspace_key = match args.get("workspace_key").and_then(Value::as_str) {
+        Some(key) if !key.trim().is_empty() => key.to_string(),
+        _ => {
+            // Auto-detect from current working directory
+            let cwd = std::env::current_dir()
+                .map_err(|e| anyhow!("cannot determine current directory: {e}"))?;
+            derive_workspace_key(&cwd)
+        }
+    };
     let query = args
         .get("query")
         .and_then(Value::as_str)
@@ -104,7 +114,7 @@ fn parse_input(args: &Value) -> Result<MemoryQueryInput> {
         })
         .clamp(1, MAX_LIMIT);
     Ok(MemoryQueryInput {
-        workspace_key: workspace_key.to_string(),
+        workspace_key,
         query: query.to_string(),
         limit,
     })
@@ -157,14 +167,21 @@ mod tests {
 
     #[test]
     fn parse_input_rejects_missing_or_empty_inputs() {
-        let missing_key = parse_input(&json!({ "query": "q" }));
-        assert!(missing_key.is_err());
+        // Missing workspace_key is now auto-detected (not an error)
+        let auto_detected = parse_input(&json!({ "query": "q" }));
+        assert!(auto_detected.is_ok(), "missing workspace_key should auto-detect");
+        let wk = match auto_detected {
+            Ok(v) => v.workspace_key,
+            Err(_) => return,
+        };
+        assert!(!wk.is_empty(), "auto-detected workspace_key must not be empty");
 
         let missing_query = parse_input(&json!({ "workspace_key": "ws" }));
         assert!(missing_query.is_err());
 
-        let empty_key = parse_input(&json!({ "workspace_key": "", "query": "q" }));
-        assert!(empty_key.is_err());
+        // Empty workspace_key is now auto-detected (not an error)
+        let auto_detected2 = parse_input(&json!({ "workspace_key": "", "query": "q" }));
+        assert!(auto_detected2.is_ok(), "empty workspace_key should auto-detect");
 
         let empty_query = parse_input(&json!({ "workspace_key": "ws", "query": "  " }));
         assert!(empty_query.is_err());

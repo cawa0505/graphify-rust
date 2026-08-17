@@ -175,7 +175,7 @@ class Hello {
 
     #[test]
     fn test_extract_c_struct_and_function() -> anyhow::Result<()> {
-        let content = r#"
+        let content = r"
 #include <stdio.h>
 
 struct Point {
@@ -191,7 +191,7 @@ void main() {
     struct Point p;
     p.x = add(1, 2);
 }
-"#;
+";
         let result = run_extract(content, "c")?;
         assert_eq!(result.nodes[0].language, "c");
         assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "Point"));
@@ -204,7 +204,7 @@ void main() {
 
     #[test]
     fn test_extract_cpp_struct_and_function() -> anyhow::Result<()> {
-        let content = r#"
+        let content = r"
 #include <vector>
 
 struct Vec2 {
@@ -221,7 +221,7 @@ int main() {
     auto len = length(v);
     return 0;
 }
-"#;
+";
         let result = run_extract(content, "cpp")?;
         assert_eq!(result.nodes[0].language, "cpp");
         assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "Vec2"));

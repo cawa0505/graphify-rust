@@ -1297,13 +1297,12 @@ fn feed_coverage_graph(plugin: &mut CoveragePlugin, cwd: &Path) {
 }
 
 fn read_input(payload: Option<&PathBuf>) -> Result<String> {
-    match payload {
-        Some(p) => std::fs::read_to_string(p).map_err(|e| anyhow!("read {}: {e}", p.display())),
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            Ok(buf)
-        }
+    if let Some(p) = payload {
+        std::fs::read_to_string(p).map_err(|e| anyhow!("read {}: {e}", p.display()))
+    } else {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        Ok(buf)
     }
 }
 

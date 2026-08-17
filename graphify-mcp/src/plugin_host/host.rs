@@ -250,7 +250,7 @@ printf 'Content-Length: %s\r\n\r\n%s' "$l3" "$r3"
         let mut plugins = HashMap::new();
         plugins.insert("mock".to_string(), mock_config(true));
         let mut host = PluginHost::scan(&plugins_config(plugins), &db, "test_workspace");
-        assert!(host.call_tool("graphify_query", &json!({})).is_err());
+        assert!(host.call_tool("graphify_graph_query", &json!({})).is_err());
         Ok(())
     }
 
