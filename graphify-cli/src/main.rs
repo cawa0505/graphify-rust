@@ -154,6 +154,13 @@ pub enum WorkspaceCommand {
         /// Workspace key (defaults to active)
         workspace_key: Option<String>,
     },
+    /// Add a new workspace
+    Add {
+        /// Workspace key (unique identifier)
+        workspace_key: String,
+        /// Root path of the workspace
+        root_path: String,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -349,6 +356,7 @@ fn main() -> Result<()> {
             WorkspaceCommand::List => run_workspace_list()?,
             WorkspaceCommand::Switch { workspace_key } => run_workspace_switch(&workspace_key)?,
             WorkspaceCommand::Status { workspace_key } => run_workspace_status(workspace_key)?,
+            WorkspaceCommand::Add { workspace_key, root_path } => run_workspace_add(&workspace_key, &root_path)?,
         },
         Commands::Handoff { command } => run_handoff(command)?,
         Commands::Opendoc { command } => run_opendoc(command)?,
@@ -745,7 +753,52 @@ fn run_path(source: &str, target: &str, graph_path: &Path) -> Result<()> {
 }
 
 fn run_tui(graph_path: &Path) -> Result<()> {
-    let graph = load_graph_output(graph_path)?;
+    let graph = match load_graph_output(graph_path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[graphify] Cannot load graph: {e}");
+            // Show workspace picker — list registered workspaces
+            let Ok(ws_list) = workspace::list_workspaces() else {
+                eprintln!("[graphify] No registered workspaces. Run `graphify index` first.");
+                return Ok(());
+            };
+            if ws_list.is_empty() {
+                eprintln!("[graphify] No registered workspaces. Run `graphify index` first.");
+                return Ok(());
+            }
+            println!("[graphify] Select a workspace:");
+            for (i, ws) in ws_list.iter().enumerate() {
+                let marker = if ws.is_active { " ◉" } else { "  " };
+                println!("  {}.{marker} {} ({})", i + 1, ws.root_path, ws.workspace_key);
+            }
+            print!("[graphify] Enter number (1-{}): ", ws_list.len());
+            std::io::Write::flush(&mut std::io::stdout())?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let parsed = match input.trim().parse::<usize>() {
+                Ok(n) => n,
+                Err(_) if input.trim().is_empty() => 1,
+                _ => {
+                    eprintln!("[graphify] Invalid selection.");
+                    return Ok(());
+                }
+            };
+            if parsed < 1 || parsed > ws_list.len() {
+                eprintln!("[graphify] Invalid selection.");
+                return Ok(());
+            }
+            let ws = &ws_list[parsed - 1];
+            // Try graph at workspace root
+            let derived = std::path::Path::new(&ws.root_path).join("graphify-out/graph.toon");
+            load_graph_output(&derived).unwrap_or_else(|_| {
+                graphify_core::GraphOutput {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                    metadata: graphify_core::GraphMetadata::default(),
+                }
+            })
+        }
+    };
     tui::run_tui(graph)?;
     Ok(())
 }
@@ -863,6 +916,13 @@ fn run_workspace_list() -> Result<()> {
 fn run_workspace_switch(workspace_key: &str) -> Result<()> {
     workspace::switch_workspace(workspace_key)?;
     println!("[graphify] Active workspace: {workspace_key}");
+    Ok(())
+}
+
+/// Add a new workspace
+fn run_workspace_add(workspace_key: &str, root_path: &str) -> Result<()> {
+    workspace::upsert_workspace(workspace_key, root_path)?;
+    println!("[graphify] Workspace '{workspace_key}' added at '{root_path}'");
     Ok(())
 }
 

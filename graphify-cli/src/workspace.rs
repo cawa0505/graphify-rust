@@ -41,6 +41,13 @@ pub fn workspace_status(workspace_key: &str) -> Result<Option<WorkspaceRow>> {
     Ok(rows.into_iter().find(|w| w.workspace_key == workspace_key))
 }
 
+/// Add or update a workspace.
+pub fn upsert_workspace(workspace_key: &str, root_path: &str) -> Result<()> {
+    open_registry()?
+        .upsert_workspace(workspace_key, root_path)
+        .map_err(anyhow::Error::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
