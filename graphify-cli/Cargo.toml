@@ -17,6 +17,8 @@ graphify-plugin-handoff = { path = "../../GraphifyPlugins/graphify-plugin-handof
 graphify-plugin-opendoc = { path = "../../GraphifyPlugins/graphify-plugin-opendoc" }
 # 第一方內嵌 plugin：review* code-review-graph 橋接工具
 graphify-plugin-review = { path = "../../GraphifyPlugins/graphify-plugin-review" }
+# 第一方內嵌 plugin：coverage* 測試覆蓋率橋接工具
+graphify-plugin-test-coverage = { path = "../../GraphifyPlugins/graphify-plugin-test-coverage" }
 clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

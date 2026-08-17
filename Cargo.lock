@@ -978,6 +978,7 @@ dependencies = [
  "graphify-plugin-handoff",
  "graphify-plugin-opendoc",
  "graphify-plugin-review",
+ "graphify-plugin-test-coverage",
  "graphify-registry",
  "qdrant-client",
  "ratatui",
@@ -1041,6 +1042,7 @@ dependencies = [
  "graphify-plugin-opendoc",
  "graphify-plugin-review",
  "graphify-plugin-telemetry",
+ "graphify-plugin-test-coverage",
  "graphify-registry",
  "petgraph",
  "serde",
@@ -1127,6 +1129,18 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "ureq 2.12.1",
+]
+
+[[package]]
+name = "graphify-plugin-test-coverage"
+version = "0.1.0"
+dependencies = [
+ "graphify-core",
+ "graphify-registry",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

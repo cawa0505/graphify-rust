@@ -22,6 +22,7 @@ use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
 use graphify_plugin_review::ReviewPlugin;
 use graphify_plugin_telemetry::TelemetryPlugin;
+use graphify_plugin_test_coverage::CoveragePlugin;
 use memory_query::MemoryQueryService;
 use petgraph::graph::{DiGraph, NodeIndex};
 use plugin_host::host::PluginHost;
@@ -187,6 +188,9 @@ fn main() -> Result<()> {
     // Embedded telemetry plugin: Draco Telemetry bridge (file-based ingest,
     // hotspot threshold in graphify.db); telemetry* tools are self-contained.
     let telemetry = Rc::new(RefCell::new(build_telemetry_plugin()));
+    // Embedded coverage plugin: test coverage bridge (LCOV/JSON ingest,
+    // line→symbol binding in graphify.db); coverage* tools are self-contained.
+    let coverage = Rc::new(RefCell::new(build_coverage_plugin()));
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -212,6 +216,7 @@ fn main() -> Result<()> {
                     Rc::clone(&opendoc),
                     Rc::clone(&review),
                     Rc::clone(&telemetry),
+                    Rc::clone(&coverage),
                 );
                 if is_notification {
                     continue;
@@ -296,6 +301,15 @@ fn build_telemetry_plugin() -> TelemetryPlugin {
     p.bind_for_cli(&cwd)
 }
 
+/// Build the embedded coverage plugin: same global-registry pattern as
+/// telemetry (coverage_bindings 在 graphify.db）。LCOV/JSON 文字 ingest，
+/// 走 line→symbol 解析綁定到 canonical node id。
+fn build_coverage_plugin() -> CoveragePlugin {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let p = CoveragePlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    p.bind_for_cli(&cwd)
+}
+
 #[allow(clippy::too_many_arguments)] // dispatch hub: 每個 plugin 一個 Rc，新增 plugin 即加一參數
 fn handle_request(
     request: JsonRpcRequest,
@@ -306,6 +320,7 @@ fn handle_request(
     opendoc: Rc<RefCell<OpendocPlugin>>,
     review: Rc<RefCell<ReviewPlugin>>,
     telemetry: Rc<RefCell<TelemetryPlugin>>,
+    coverage: Rc<RefCell<CoveragePlugin>>,
 ) -> JsonRpcResponse {
     let method = request.method.as_str();
     match method {
@@ -605,6 +620,37 @@ fn handle_request(
                         },
                         "required": ["node"]
                     }
+                },
+                {
+                    "name": "coverageIngest",
+                    "description": "測試覆蓋率資料匯入：LCOV 文字或 cobertura JSON。line→symbol 綁定後存入 coverage_bindings（graphify.db）；每次 ingest 以快照取代舊資料。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "format": { "type": "string", "enum": ["lcov", "json"], "description": "輸入格式" },
+                            "data": { "type": "string", "description": "LCOV 或 cobertura JSON 文字內容" }
+                        },
+                        "required": ["format", "data"]
+                    }
+                },
+                {
+                    "name": "coverageGetContext",
+                    "description": "查詢某個 canonical node id 的覆蓋率綁定（covered_lines / total_lines / line_rate）",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "node": { "type": "string", "description": "canonical node id（如 `src/a.rs:function:f`）" }
+                        },
+                        "required": ["node"]
+                    }
+                },
+                {
+                    "name": "coverageBlindspots",
+                    "description": "列出所有覆蓋率 < 50% 的盲區節點",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
                 }
             ]);
             // A poisoned plugin lock must not hide the built-in tools;
@@ -871,6 +917,56 @@ fn handle_request(
                         error: Some(JsonRpcError {
                             code: -32603,
                             message: format!("Telemetry tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
+            // Embedded coverage tools: test coverage bridge — LCOV/JSON
+            // ingest resolves line→symbol against the cached GraphOutput;
+            // coverageIngest 前先餵 graph 讓 line→symbol 升維有圖譜可對齊。
+            if matches!(
+                tool_name,
+                "coverageIngest" | "coverageGetContext" | "coverageBlindspots"
+            ) {
+                if tool_name == "coverageIngest" {
+                    let state = match state_lock.read() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: request.id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32603,
+                                    message: "graph state lock poisoned".to_string(),
+                                }),
+                            };
+                        }
+                    };
+                    let toon_str = graphify_core::to_toon(&state.graph_data);
+                    drop(state);
+                    coverage
+                        .borrow_mut()
+                        .sync_toon(Some(toon_str.into_bytes()));
+                }
+                let coverage = coverage.borrow();
+                return match run_coverage_tool(tool_name, &tool_arguments, &coverage) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Coverage tool error: {e}"),
                         }),
                     },
                 };
@@ -1216,6 +1312,70 @@ fn run_telemetry_tool(
             }
         }
         _ => anyhow::bail!("Unsupported telemetry tool: {name}"),
+    }
+}
+
+fn run_coverage_tool(
+    name: &str,
+    args: &serde_json::Value,
+    coverage: &CoveragePlugin,
+) -> Result<String> {
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let wk = coverage.get_workspace_key().to_string();
+    match name {
+        "coverageIngest" => {
+            let format = get_str("format").ok_or_else(|| anyhow!("Missing 'format'"))?;
+            let data = get_str("data").ok_or_else(|| anyhow!("Missing 'data'"))?;
+            let summary = match format {
+                "lcov" => coverage
+                    .coverage_ingest_lcov(data)
+                    .map_err(|e| anyhow!("coverage ingest-lcov: {e}"))?,
+                "json" => coverage
+                    .coverage_ingest_json(data)
+                    .map_err(|e| anyhow!("coverage ingest-json: {e}"))?,
+                other => anyhow::bail!("format={other} not supported — use \"lcov\" or \"json\""),
+            };
+            Ok(format!(
+                "[coverage] ingest-{format}: {} bound nodes, {} total lines, {} covered, {} blindspots",
+                summary.bound_nodes, summary.total_lines, summary.covered_lines, summary.blindspots,
+            ))
+        }
+        "coverageGetContext" => {
+            let node = get_str("node").ok_or_else(|| anyhow!("Missing 'node'"))?;
+            let db = coverage
+                .db()
+                .map_err(|e| anyhow!("coverage db: {e}"))?;
+            match db.query_by_node(&wk, node)? {
+                Some(b) => {
+                    let pct = b.line_rate * 100.0;
+                    Ok(format!(
+                        "[coverage] {node}: {}/{} lines ({:.1}%)",
+                        b.covered_lines, b.total_lines, pct
+                    ))
+                }
+                None => Ok(format!("[coverage] {node}: no coverage data")),
+            }
+        }
+        "coverageBlindspots" => {
+            let db = coverage
+                .db()
+                .map_err(|e| anyhow!("coverage db: {e}"))?;
+            let spots = db.query_blindspots(&wk)?;
+            if spots.is_empty() {
+                Ok("[coverage] no blindspots (all nodes >= 50% coverage)".to_string())
+            } else {
+                let mut out = format!("[coverage] {} blindspot(s):\n", spots.len());
+                for b in &spots {
+                    let pct = b.line_rate * 100.0;
+                    out.push_str(&format!(
+                        "  {}\t{}/{} ({:.1}%)\n",
+                        b.canonical_node_id, b.covered_lines, b.total_lines, pct
+                    ));
+                }
+                Ok(out)
+            }
+        }
+        _ => anyhow::bail!("Unsupported coverage tool: {name}"),
     }
 }
 

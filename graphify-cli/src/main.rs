@@ -20,9 +20,11 @@ use graphify_core::{
 use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
 use graphify_plugin_opendoc::OpendocPlugin;
+use graphify_plugin_test_coverage::CoveragePlugin;
 use graphify_registry::db::RegistryDb;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -122,6 +124,11 @@ enum Commands {
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
+    },
+    /// 測試覆蓋率橋接（內嵌 graphify-plugin-test-coverage）
+    Coverage {
+        #[command(subcommand)]
+        command: CoverageCommand,
     },
 }
 
@@ -323,6 +330,27 @@ pub enum ReviewCommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum CoverageCommand {
+    /// 從 LCOV 文字匯入覆蓋率資料（stdin 或檔案路徑）
+    IngestLcov {
+        /// LCOV 檔案路徑（省略時從 stdin 讀取）
+        payload: Option<PathBuf>,
+    },
+    /// 從 cobertura JSON 匯入覆蓋率資料（stdin 或檔案路徑）
+    IngestJson {
+        /// JSON 檔案路徑（省略時從 stdin 讀取）
+        payload: Option<PathBuf>,
+    },
+    /// 查詢某個 canonical node id 的覆蓋率綁定
+    Query {
+        /// canonical node id（如 `src/a.rs:function:f`）
+        node: String,
+    },
+    /// 列出所有覆蓋率 < 50% 的盲區節點
+    Blindspots,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -365,6 +393,7 @@ fn main() -> Result<()> {
         Commands::Handoff { command } => run_handoff(command)?,
         Commands::Opendoc { command } => run_opendoc(command)?,
         Commands::Review { command } => run_review(command)?,
+        Commands::Coverage { command } => run_coverage(command)?,
     }
     Ok(())
 }
@@ -1228,6 +1257,115 @@ fn run_review(command: ReviewCommand) -> Result<()> {
                 }
             } else {
                 println!("[review] {review_id}: not found");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `graphify coverage` — 測試覆蓋率橋接（內嵌 graphify-plugin-test-coverage）。
+///
+/// 比照 `review` 整合模式：cwd 合成 `WorkspaceContext`、全域 graphify.db
+/// 路徑注入。
+fn build_coverage_for_cli() -> Result<CoveragePlugin> {
+    let cwd = std::env::current_dir()?;
+    let plugin = CoveragePlugin::new()
+        .with_registry_path(graphify_registry::registry_db_path());
+    Ok(plugin.bind_for_cli(&cwd))
+}
+
+/// 餵 graph 給 coverage plugin（line→symbol 解析需要 AST range）。
+fn feed_coverage_graph(plugin: &mut CoveragePlugin, cwd: &Path) {
+    let toon_path = cwd.join("graphify-out/graph.toon");
+    if !toon_path.exists() {
+        eprintln!(
+            "[coverage] note: 無快取 graphify-out/graph.toon；先跑 `graphify graph` \
+             才能做 line→symbol 綁定"
+        );
+        return;
+    }
+    match load_graph_output(&toon_path) {
+        Ok(g) => {
+            let s = graphify_core::to_toon(&g);
+            plugin.sync_toon(Some(s.into_bytes()));
+        }
+        Err(e) => eprintln!(
+            "[coverage] warning: cached graph unreadable ({e}); \
+             ingest 將所有行視為 file-level"
+        ),
+    }
+}
+
+fn read_input(payload: Option<&PathBuf>) -> Result<String> {
+    match payload {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| anyhow!("read {}: {e}", p.display())),
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            Ok(buf)
+        }
+    }
+}
+
+/// `graphify coverage` — 執行測試覆蓋率命令。
+fn run_coverage(command: CoverageCommand) -> Result<()> {
+    let mut plugin = build_coverage_for_cli()?;
+    let key = plugin.get_workspace_key().to_string();
+    let cwd = std::env::current_dir().context("cwd")?;
+    match command {
+        CoverageCommand::IngestLcov { payload } => {
+            feed_coverage_graph(&mut plugin, &cwd);
+            let data = read_input(payload.as_ref())?;
+            let summary = plugin
+                .coverage_ingest_lcov(&data)
+                .map_err(|e| anyhow!("coverage ingest-lcov: {e}"))?;
+            println!(
+                "[coverage] ingest-lcov: {} bound nodes, {} total lines, \
+                 {} covered, {} blindspots",
+                summary.bound_nodes, summary.total_lines, summary.covered_lines, summary.blindspots,
+            );
+        }
+        CoverageCommand::IngestJson { payload } => {
+            feed_coverage_graph(&mut plugin, &cwd);
+            let data = read_input(payload.as_ref())?;
+            let summary = plugin
+                .coverage_ingest_json(&data)
+                .map_err(|e| anyhow!("coverage ingest-json: {e}"))?;
+            println!(
+                "[coverage] ingest-json: {} bound nodes, {} total lines, \
+                 {} covered, {} blindspots",
+                summary.bound_nodes, summary.total_lines, summary.covered_lines, summary.blindspots,
+            );
+        }
+        CoverageCommand::Query { node } => {
+            let db = plugin.db().map_err(|e| anyhow!("coverage db: {e}"))?;
+            match db.query_by_node(&key, &node)? {
+                Some(b) => println!(
+                    "[coverage] {}: {}/{} lines ({:.1}%)",
+                    b.canonical_node_id,
+                    b.covered_lines,
+                    b.total_lines,
+                    b.line_rate * 100.0,
+                ),
+                None => println!("[coverage] {node}: no coverage data"),
+            }
+        }
+        CoverageCommand::Blindspots => {
+            let db = plugin.db().map_err(|e| anyhow!("coverage db: {e}"))?;
+            let spots = db.query_blindspots(&key)?;
+            if spots.is_empty() {
+                println!("[coverage] no blindspots (all nodes >= 50% coverage)");
+            } else {
+                println!("[coverage] {} blindspot(s):", spots.len());
+                for b in &spots {
+                    println!(
+                        "  {}\t{}/{} ({:.1}%)",
+                        b.canonical_node_id,
+                        b.covered_lines,
+                        b.total_lines,
+                        b.line_rate * 100.0,
+                    );
+                }
             }
         }
     }

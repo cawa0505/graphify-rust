@@ -20,6 +20,8 @@ graphify-plugin-opendoc = { path = "../../GraphifyPlugins/graphify-plugin-opendo
 graphify-plugin-review = { path = "../../GraphifyPlugins/graphify-plugin-review" }
 # 第一方內嵌 plugin：telemetry* Draco Telemetry 橋接工具
 graphify-plugin-telemetry = { path = "../../GraphifyPlugins/graphify-plugin-telemetry" }
+# 第一方內嵌 plugin：coverage* 測試覆蓋率橋接工具
+graphify-plugin-test-coverage = { path = "../../GraphifyPlugins/graphify-plugin-test-coverage" }
 
 # Async / IO
 tokio = { version = "1.0", features = ["full"] }
