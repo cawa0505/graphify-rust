@@ -167,6 +167,38 @@ mod tests {
         }
     }
 
+    /// A test plugin with controllable health check.
+    struct HealthControlledPlugin {
+        id: &'static str,
+        healthy: bool,
+    }
+
+    impl GraphifyPlugin for HealthControlledPlugin {
+        fn get_id(&self) -> &'static str {
+            self.id
+        }
+        fn bind(&mut self, _ctx: WorkspaceContext) {}
+        fn get_workspace_key(&self) -> &'static str {
+            ""
+        }
+        fn sync_toon(&mut self, _opt_toon: Option<Vec<u8>>) -> Vec<u8> {
+            Vec::new()
+        }
+        fn on_health_check(&self) -> bool {
+            self.healthy
+        }
+    }
+
+    /// Create a temp registry db with a workspace and a plugin registration.
+    fn seeded_db() -> anyhow::Result<(RegistryDb, tempfile::TempDir)> {
+        let dir = tempfile::tempdir()?;
+        let db = RegistryDb::open(&dir.path().join("graphify.db"))?;
+        db.upsert_workspace("test-ws", "/tmp/test")?;
+        db.upsert_plugin_registration("healthy-plugin", "test-ws", "test-collection")?;
+        db.upsert_plugin_registration("unhealthy-plugin", "test-ws", "test-collection")?;
+        Ok((db, dir))
+    }
+
     /// A plugin that panics on every hook call.
     struct PanickingPlugin {
         id: &'static str,
@@ -247,5 +279,95 @@ mod tests {
         let mut host = PluginHost::new();
         host.broadcast(&sample_event());
         // No panic, no output — just returns.
+    }
+
+    #[test]
+    fn probe_all_returns_healthy_for_healthy_plugin() -> anyhow::Result<()> {
+        let (db, _dir) = seeded_db()?;
+        let mut host = PluginHost::new();
+        host.register(Box::new(HealthControlledPlugin {
+            id: "healthy-plugin",
+            healthy: true,
+        }));
+        host.register(Box::new(HealthControlledPlugin {
+            id: "unhealthy-plugin",
+            healthy: false,
+        }));
+
+        let results = host.probe_all(&db, "test-ws");
+        assert_eq!(results.len(), 2);
+
+        let healthy = results.iter().find(|(id, _)| id == "healthy-plugin");
+        assert_eq!(healthy.map(|(_, s)| *s), Some(PluginStatus::Healthy));
+
+        let unhealthy = results.iter().find(|(id, _)| id == "unhealthy-plugin");
+        assert_eq!(unhealthy.map(|(_, s)| *s), Some(PluginStatus::Unavailable));
+        Ok(())
+    }
+
+    #[test]
+    fn probe_all_persists_status_to_registry() -> anyhow::Result<()> {
+        let (db, _dir) = seeded_db()?;
+        let mut host = PluginHost::new();
+        host.register(Box::new(HealthControlledPlugin {
+            id: "healthy-plugin",
+            healthy: true,
+        }));
+
+        host.probe_all(&db, "test-ws");
+
+        // Read back from registry to verify persistence.
+        let rows = db.list_registrations("test-ws")?;
+        let row = rows.iter().find(|r| r.plugin_id == "healthy-plugin");
+        assert_eq!(row.map(|r| r.status), Some(PluginStatus::Healthy));
+        Ok(())
+    }
+
+    #[test]
+    fn reset_quarantine_clears_and_reprobes() -> anyhow::Result<()> {
+        let (db, _dir) = seeded_db()?;
+        // Seed a quarantined status.
+        db.set_status("healthy-plugin", "test-ws", PluginStatus::Quarantined)?;
+
+        let mut host = PluginHost::new();
+        host.register(Box::new(HealthControlledPlugin {
+            id: "healthy-plugin",
+            healthy: true,
+        }));
+
+        let status = host.reset_quarantine(&db, "test-ws", "healthy-plugin");
+        assert_eq!(status, Some(PluginStatus::Healthy));
+
+        // Registry should reflect the new status.
+        let rows = db.list_registrations("test-ws")?;
+        let row = rows.iter().find(|r| r.plugin_id == "healthy-plugin");
+        assert_eq!(row.map(|r| r.status), Some(PluginStatus::Healthy));
+        Ok(())
+    }
+
+    #[test]
+    fn reset_quarantine_returns_unavailable_when_probe_fails() -> anyhow::Result<()> {
+        let (db, _dir) = seeded_db()?;
+        db.set_status("unhealthy-plugin", "test-ws", PluginStatus::Quarantined)?;
+
+        let mut host = PluginHost::new();
+        host.register(Box::new(HealthControlledPlugin {
+            id: "unhealthy-plugin",
+            healthy: false,
+        }));
+
+        let status = host.reset_quarantine(&db, "test-ws", "unhealthy-plugin");
+        assert_eq!(status, Some(PluginStatus::Unavailable));
+        Ok(())
+    }
+
+    #[test]
+    fn reset_quarantine_returns_none_for_unknown_plugin() -> anyhow::Result<()> {
+        let (db, _dir) = seeded_db()?;
+        let mut host = PluginHost::new();
+        // No plugins registered.
+        let status = host.reset_quarantine(&db, "test-ws", "nonexistent");
+        assert_eq!(status, None);
+        Ok(())
     }
 }

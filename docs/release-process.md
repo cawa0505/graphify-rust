@@ -41,9 +41,24 @@ A release MUST NOT be tagged unless **all** of the following pass:
 3. Document the release (this file stays current; docs/ref get a one-line note
    per rule #3127 when referenced version milestones shift).
 4. Commit the release change.
-5. On maintainer approval: `git tag v2.0.0-alpha.1` and push tag + branch.
+5. On maintainer approval: `git tag v<semver>` and push tag + branch.
+
+### Beta Release Flow
+
+The v2.0.0-beta.x release follows the same process as alpha, with these
+additional steps:
+
+1. **Version bump**: `2.0.0-beta.1` (incrementing `.x` for each beta).
+2. **Checklist addition**: In addition to the mandatory checklist, verify
+   `graphify plugin {probe,reset,list}` outputs correct status for all bound
+   plugins (health probe integration test, P3).
+3. **Tag**: `git tag v2.0.0-beta.1` (matching the crate version).
+4. **Pre-release note**: Add a line to the History section documenting the
+   beta release date and version.
 
 ## History
 
+- 2026-08-17: v2.0.0-beta.x — beta release process documented
+  (post-P3 health probe, P4 TUI workspace/monitor, P5 E2E tests).
 - 2026-08-10: v2.0.0-alpha.1 — first release under this process
   (RFC-0004 Target Release: Graphify v2.0-alpha).
