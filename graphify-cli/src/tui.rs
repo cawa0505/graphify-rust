@@ -41,10 +41,7 @@ use std::{
 };
 
 /// Tab 標題：繪製與點擊命中測試共用同一來源，避免偏移漂移
-const TAB_TITLES: [&str; 2] = [
-    " 🔍 Explorer (1) ",
-    " 📊 Visual Graph (2) ",
-];
+const TAB_TITLES: [&str; 2] = [" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
 
 pub struct App {
     pub graph: GraphOutput,
@@ -259,7 +256,11 @@ impl App {
     /// Navigate plugin panel modal down
     #[allow(clippy::missing_const_for_fn)]
     fn modal_plugin_next(&mut self) {
-        if let ModalState::PluginPanel { ref plugins, ref mut hovered } = self.modal_state {
+        if let ModalState::PluginPanel {
+            ref plugins,
+            ref mut hovered,
+        } = self.modal_state
+        {
             if !plugins.is_empty() {
                 *hovered = (*hovered + 1) % plugins.len();
             }
@@ -270,9 +271,17 @@ impl App {
     /// Navigate plugin panel modal up
     #[allow(clippy::missing_const_for_fn)]
     fn modal_plugin_prev(&mut self) {
-        if let ModalState::PluginPanel { ref plugins, ref mut hovered } = self.modal_state {
+        if let ModalState::PluginPanel {
+            ref plugins,
+            ref mut hovered,
+        } = self.modal_state
+        {
             if !plugins.is_empty() {
-                *hovered = if *hovered == 0 { plugins.len() - 1 } else { *hovered - 1 };
+                *hovered = if *hovered == 0 {
+                    plugins.len() - 1
+                } else {
+                    *hovered - 1
+                };
             }
             self.modal_hover = Some(*hovered);
         }
@@ -281,7 +290,11 @@ impl App {
     /// Navigate workspace selector down
     #[allow(clippy::missing_const_for_fn)]
     fn modal_workspace_next(&mut self) {
-        if let ModalState::WorkspaceSelector { ref workspaces, ref mut hovered } = self.modal_state {
+        if let ModalState::WorkspaceSelector {
+            ref workspaces,
+            ref mut hovered,
+        } = self.modal_state
+        {
             if !workspaces.is_empty() {
                 *hovered = (*hovered + 1) % workspaces.len();
             }
@@ -292,9 +305,17 @@ impl App {
     /// Navigate workspace selector up
     #[allow(clippy::missing_const_for_fn)]
     fn modal_workspace_prev(&mut self) {
-        if let ModalState::WorkspaceSelector { ref workspaces, ref mut hovered } = self.modal_state {
+        if let ModalState::WorkspaceSelector {
+            ref workspaces,
+            ref mut hovered,
+        } = self.modal_state
+        {
             if !workspaces.is_empty() {
-                *hovered = if *hovered == 0 { workspaces.len() - 1 } else { *hovered - 1 };
+                *hovered = if *hovered == 0 {
+                    workspaces.len() - 1
+                } else {
+                    *hovered - 1
+                };
             }
             self.modal_hover = Some(*hovered);
         }
@@ -466,12 +487,19 @@ impl App {
         let ws_key = db
             .as_ref()
             .and_then(|d| d.list_workspaces().ok())
-            .and_then(|ws| ws.into_iter().find(|w| w.is_active).map(|w| w.workspace_key));
+            .and_then(|ws| {
+                ws.into_iter()
+                    .find(|w| w.is_active)
+                    .map(|w| w.workspace_key)
+            });
         let plugins = match (db.as_ref(), ws_key) {
             (Some(d), Some(k)) => d.list_registrations(&k).ok().unwrap_or_default(),
             _ => Vec::new(),
         };
-        let hovered = plugins.iter().position(|p| p.status == graphify_registry::db::PluginStatus::Quarantined).unwrap_or(0);
+        let hovered = plugins
+            .iter()
+            .position(|p| p.status == graphify_registry::db::PluginStatus::Quarantined)
+            .unwrap_or(0);
         self.modal_state = ModalState::PluginPanel { plugins, hovered };
         self.modal_hover = Some(hovered);
         self.flash.trigger(ActionTag::Nav);
@@ -484,11 +512,19 @@ impl App {
             ModalState::PluginPanel { plugins, .. } => plugins.clone(),
             _ => return,
         };
-        let Some(ws_key) = Self::active_workspace_key() else { return };
-        let Ok(db) = graphify_registry::db::RegistryDb::open(&registry_db_path()) else { return };
+        let Some(ws_key) = Self::active_workspace_key() else {
+            return;
+        };
+        let Ok(db) = graphify_registry::db::RegistryDb::open(&registry_db_path()) else {
+            return;
+        };
         for reg in &plugins {
             if reg.status == graphify_registry::db::PluginStatus::Quarantined {
-                let _ = db.set_status(&reg.plugin_id, &ws_key, graphify_registry::db::PluginStatus::Unavailable);
+                let _ = db.set_status(
+                    &reg.plugin_id,
+                    &ws_key,
+                    graphify_registry::db::PluginStatus::Unavailable,
+                );
             }
         }
         // ponytail: re-probe = set to Unavailable and let next probe cycle report true status
@@ -500,7 +536,11 @@ impl App {
     /// Get the active workspace key, if any
     fn active_workspace_key() -> Option<String> {
         let db = graphify_registry::db::RegistryDb::open(&registry_db_path()).ok()?;
-        db.list_workspaces().ok()?.into_iter().find(|w| w.is_active).map(|w| w.workspace_key)
+        db.list_workspaces()
+            .ok()?
+            .into_iter()
+            .find(|w| w.is_active)
+            .map(|w| w.workspace_key)
     }
 
     // ── workspace selector helpers ──
@@ -512,7 +552,10 @@ impl App {
             .and_then(|d| d.list_workspaces().ok())
             .unwrap_or_default();
         let hovered = workspaces.iter().position(|w| w.is_active).unwrap_or(0);
-        self.modal_state = ModalState::WorkspaceSelector { workspaces, hovered };
+        self.modal_state = ModalState::WorkspaceSelector {
+            workspaces,
+            hovered,
+        };
         self.modal_hover = Some(hovered);
         self.flash.trigger(ActionTag::Nav);
         self.log("Keyboard: 'w' → Workspace selector", theme::MAUVE);
@@ -524,7 +567,9 @@ impl App {
             ModalState::WorkspaceSelector { workspaces, .. } => workspaces.clone(),
             _ => return,
         };
-        let Some(ws) = workspaces.get(idx) else { return };
+        let Some(ws) = workspaces.get(idx) else {
+            return;
+        };
         let toon_path = Path::new(&ws.root_path).join("graphify-out/graph.toon");
         let new_graph = std::fs::read_to_string(&toon_path)
             .ok()
@@ -538,15 +583,23 @@ impl App {
         self.graph = new_graph;
         self.filtered_nodes = (0..self.graph.nodes.len()).collect();
         self.search_query.clear();
-        self.list_state.select(if self.graph.nodes.is_empty() { None } else { Some(0) });
+        self.list_state.select(if self.graph.nodes.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
         let initial_selected = self.graph.nodes.first().map(|n| &n.id);
-        self.canvas_coords = crate::ui::canvas::NodeCoordinates::compute(&self.graph, initial_selected);
+        self.canvas_coords =
+            crate::ui::canvas::NodeCoordinates::compute(&self.graph, initial_selected);
         self.pan_x = 0.0;
         self.pan_y = 0.0;
         self.zoom = 1.0;
         self.close_modal();
         self.flash.trigger(ActionTag::Reset);
-        self.log(format!("Switched to workspace: {}", ws.root_path), theme::GREEN);
+        self.log(
+            format!("Switched to workspace: {}", ws.root_path),
+            theme::GREEN,
+        );
     }
 }
 
@@ -1082,8 +1135,6 @@ fn draw_visual_graph(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         area,
     );
 }
-
-
 
 #[allow(clippy::too_many_lines)]
 fn draw_explorer(f: &mut ratatui::Frame, app: &mut App, area: Rect) {

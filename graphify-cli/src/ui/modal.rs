@@ -115,12 +115,14 @@ pub fn draw_modal(
             hovered,
             area,
         )),
-        ModalState::PluginPanel { plugins, hovered: h } => {
-            Some(draw_plugin_panel(f, plugins, *h, area))
-        }
-        ModalState::WorkspaceSelector { workspaces, hovered: h } => {
-            Some(draw_workspace_selector(f, workspaces, *h, area))
-        }
+        ModalState::PluginPanel {
+            plugins,
+            hovered: h,
+        } => Some(draw_plugin_panel(f, plugins, *h, area)),
+        ModalState::WorkspaceSelector {
+            workspaces,
+            hovered: h,
+        } => Some(draw_workspace_selector(f, workspaces, *h, area)),
     }
 }
 
@@ -198,10 +200,7 @@ fn draw_plugin_panel(
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(format!(" {icon} "), Style::default().fg(color)),
-                    Span::styled(
-                        &reg.plugin_id,
-                        Style::default().fg(theme::TEXT),
-                    ),
+                    Span::styled(&reg.plugin_id, Style::default().fg(theme::TEXT)),
                     Span::raw("  "),
                     Span::styled(last_synced, Style::default().fg(theme::SUBTLE)),
                 ]))
@@ -293,15 +292,9 @@ fn draw_workspace_selector(
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(marker, Style::default().fg(theme::GOLD)),
-                    Span::styled(
-                        &ws.root_path,
-                        Style::default().fg(theme::TEXT),
-                    ),
+                    Span::styled(&ws.root_path, Style::default().fg(theme::TEXT)),
                     Span::raw(" ("),
-                    Span::styled(
-                        &ws.workspace_key,
-                        Style::default().fg(theme::SUBTLE),
-                    ),
+                    Span::styled(&ws.workspace_key, Style::default().fg(theme::SUBTLE)),
                     Span::raw(")"),
                 ]))
             })

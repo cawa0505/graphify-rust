@@ -261,7 +261,7 @@ mod tests {
             "handoff",
             "rec-bad",
             "handoff",
-            0,  // created_at <= 0 is invalid
+            0, // created_at <= 0 is invalid
             vec![],
             serde_json::json!({"x": 1}),
         );

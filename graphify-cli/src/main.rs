@@ -14,11 +14,12 @@ pub mod workspace;
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use graphify_core::{
-    ExtractionResult, GraphMetadata, GraphOutput, GraphUpdateEvent, GraphUpdateKind, Node, NodeId,
-    GraphifyPlugin, build_graph, derive_workspace_key, extract_file, find_shortest_path, query_bfs,
+    ExtractionResult, GraphMetadata, GraphOutput, GraphUpdateEvent, GraphUpdateKind,
+    GraphifyPlugin, Node, NodeId, build_graph, derive_workspace_key, extract_file,
+    find_shortest_path, query_bfs,
 };
-use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_handoff::RelayPlugin;
+use graphify_plugin_handoff::relay::SaveArgs;
 use graphify_plugin_opendoc::OpendocPlugin;
 use graphify_plugin_test_coverage::CoveragePlugin;
 use graphify_registry::db::RegistryDb;
@@ -131,7 +132,7 @@ enum Commands {
         #[command(subcommand)]
         command: CoverageCommand,
     },
-    /// Initialize a project with graphify + statemachine infrastructure (state.json, .gitignore, AST graph)
+    /// Initialize a project with graphify + guardrail-mcp infrastructure (state.json, .gitignore, AST graph)
     Init {
         /// Project directory (defaults to current directory)
         #[arg(default_value = ".")]
@@ -406,6 +407,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // ponytail: pre-existing, not part of rename scope
 fn run_init(project_dir: &Path) -> Result<()> {
     let state_dir = project_dir.join(".opencode");
     let state_path = state_dir.join("state.json");
@@ -465,15 +467,22 @@ fn run_init(project_dir: &Path) -> Result<()> {
             .append(true)
             .create(true)
             .open(&gitignore_path)?;
-        let sep = if gi_content.trim().is_empty() { "" } else { "\n" };
-        writeln!(file, "{sep}# StateMachineMcp (local state)\n.opencode/")?;
+        let sep = if gi_content.trim().is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        writeln!(file, "{sep}# guardrail-mcp (local state)\n.opencode/")?;
         gitignore_updated = true;
     }
 
     // ── 5. Run graphify extract ──
     let graph_out = project_dir.join("graphify-out").join("graph.toon");
     let (extract_result, extract_ast_synced) = if graph_out_dir.exists() {
-        ("graphify-out/ already exists, skipping extract".to_string(), true)
+        (
+            "graphify-out/ already exists, skipping extract".to_string(),
+            true,
+        )
     } else {
         match run_extract(project_dir, &graph_out, None) {
             Ok(()) => (
@@ -504,8 +513,14 @@ fn run_init(project_dir: &Path) -> Result<()> {
     }
 
     // ── 6. Summary ──
-    println!("✅ graphify init — {project_type} project at {}", project_dir.display());
-    println!("   ├─ .opencode/state.json  created (phase: PLANNING, ast_synced: {ast_synced_show})", ast_synced_show = if extract_ast_synced { "true" } else { "false" });
+    println!(
+        "✅ graphify init — {project_type} project at {}",
+        project_dir.display()
+    );
+    println!(
+        "   ├─ .opencode/state.json  created (phase: PLANNING, ast_synced: {ast_synced_show})",
+        ast_synced_show = if extract_ast_synced { "true" } else { "false" }
+    );
     if gitignore_updated {
         println!("   ├─ .gitignore  updated");
     }
@@ -945,7 +960,12 @@ fn run_tui(graph_path: &Path) -> Result<()> {
             println!("[graphify] Select a workspace:");
             for (i, ws) in ws_list.iter().enumerate() {
                 let marker = if ws.is_active { " ◉" } else { "  " };
-                println!("  {}.{marker} {} ({})", i + 1, ws.root_path, ws.workspace_key);
+                println!(
+                    "  {}.{marker} {} ({})",
+                    i + 1,
+                    ws.root_path,
+                    ws.workspace_key
+                );
             }
             print!("[graphify] Enter number (1-{}): ", ws_list.len());
             std::io::Write::flush(&mut std::io::stdout())?;
@@ -966,12 +986,10 @@ fn run_tui(graph_path: &Path) -> Result<()> {
             let ws = &ws_list[parsed - 1];
             // Try graph at workspace root
             let derived = std::path::Path::new(&ws.root_path).join("graphify-out/graph.toon");
-            load_graph_output(&derived).unwrap_or_else(|_| {
-                graphify_core::GraphOutput {
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                    metadata: graphify_core::GraphMetadata::default(),
-                }
+            load_graph_output(&derived).unwrap_or_else(|_| graphify_core::GraphOutput {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                metadata: graphify_core::GraphMetadata::default(),
             })
         }
     };
@@ -982,8 +1000,8 @@ fn run_tui(graph_path: &Path) -> Result<()> {
 /// Manually trigger a `Manual` graph-update event for all bound plugins.
 fn run_hooks() -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let db = RegistryDb::open(&graphify_registry::registry_db_path())
-        .context("opening registry")?;
+    let db =
+        RegistryDb::open(&graphify_registry::registry_db_path()).context("opening registry")?;
     let mut host = plugin_host::PluginHost::new();
     register_embedded_plugins(&mut host, &cwd, &db);
     host.broadcast(&GraphUpdateEvent::new(
@@ -1051,11 +1069,7 @@ fn run_plugin_list() -> Result<()> {
 ///
 /// ponytail: kept in one place so `run_hooks`, `probe`, `reset` share the
 /// same registration set. Add new plugins here.
-fn register_embedded_plugins(
-    host: &mut plugin_host::PluginHost,
-    cwd: &Path,
-    _db: &RegistryDb,
-) {
+fn register_embedded_plugins(host: &mut plugin_host::PluginHost, cwd: &Path, _db: &RegistryDb) {
     // handoff
     let mut handoff = RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
     handoff.bind_for_cli(cwd);
@@ -1135,8 +1149,7 @@ fn run_workspace_status(workspace_key: Option<String>) -> Result<()> {
 /// `HandoffSnapshot` 同步即寫入同一資料庫。
 fn run_handoff(command: HandoffCommand) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let mut plugin =
-        RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
+    let mut plugin = RelayPlugin::new().with_registry_path(graphify_registry::registry_db_path());
     plugin.bind_for_cli(&cwd);
     let out = match command {
         HandoffCommand::Init { project, kind } => plugin.relay_init(&project, kind.as_deref())?,
@@ -1181,18 +1194,17 @@ fn run_handoff(command: HandoffCommand) -> Result<()> {
 /// 比照 `handoff` 整合模式：cwd 合成 `WorkspaceContext`、全域 graphify.db
 /// 路徑注入。Layer 2 backend：讀 `OD_BASE_URL` env（如 `http://127.0.0.1:8080`）。
 fn od_base_url() -> Option<String> {
-    std::env::var("OD_BASE_URL").ok().filter(|s| !s.trim().is_empty())
+    std::env::var("OD_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// 建構 OpendocPlugin（注入 registry + Layer 2 backend）並 bind 到 cwd。
 fn build_opendoc_for_cli() -> Result<graphify_plugin_opendoc::OpendocPlugin> {
     let cwd = std::env::current_dir()?;
-    let mut plugin = OpendocPlugin::new()
-        .with_registry_path(graphify_registry::registry_db_path());
+    let mut plugin = OpendocPlugin::new().with_registry_path(graphify_registry::registry_db_path());
     if let Some(url) = od_base_url() {
-        plugin = plugin.with_backend(Box::new(
-            graphify_plugin_opendoc::RestBackend::new(&url),
-        ));
+        plugin = plugin.with_backend(Box::new(graphify_plugin_opendoc::RestBackend::new(&url)));
     }
     Ok(plugin.bind_for_cli(&cwd))
 }
@@ -1379,10 +1391,7 @@ fn run_review(command: ReviewCommand) -> Result<()> {
                 println!("[review] {node_id}: no unresolved reviews");
             } else {
                 for r in &rows {
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        r.id, r.severity, r.category, r.comment
-                    );
+                    println!("{}\t{}\t{}\t{}", r.id, r.severity, r.category, r.comment);
                 }
             }
         }
@@ -1412,8 +1421,7 @@ fn run_review(command: ReviewCommand) -> Result<()> {
 /// 路徑注入。
 fn build_coverage_for_cli() -> Result<CoveragePlugin> {
     let cwd = std::env::current_dir()?;
-    let plugin = CoveragePlugin::new()
-        .with_registry_path(graphify_registry::registry_db_path());
+    let plugin = CoveragePlugin::new().with_registry_path(graphify_registry::registry_db_path());
     Ok(plugin.bind_for_cli(&cwd))
 }
 
