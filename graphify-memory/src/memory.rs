@@ -207,7 +207,7 @@ impl QdrantMemoryStore {
     pub fn new(config: LongTermMemoryConfig, embedding_concurrency: Option<usize>) -> Self {
         let server_url = config.qdrant.url.clone();
         let client = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_default();
         let grpc_client = if config.qdrant.grpc {
@@ -223,6 +223,7 @@ impl QdrantMemoryStore {
                 url = url.replace(":6333", ":6334");
             }
             let mut builder = qdrant_client::Qdrant::from_url(&url)
+                .timeout(Duration::from_secs(120))
                 .skip_compatibility_check(); // Disable version check to avoid errors
             if let Some(ref api_key) = config.qdrant.api_key {
                 builder = builder.api_key(api_key.as_str());
@@ -667,14 +668,19 @@ impl QdrantMemoryStore {
             return Ok(());
         }
 
-        // remove stale vectors for every changed/deleted source file first
-        self.delete_points_by_source_files(changed_files).await?;
-
-        // only re-embed nodes whose source file changed (and pass the kind filter)
-        let filtered_nodes: Vec<&graphify_core::Node> = nodes
+        // collect all nodes belonging to changed files (pre-filter pass for delete + upsert)
+        let changed_nodes: Vec<&graphify_core::Node> = nodes
             .iter()
-            .filter(|node| lt_config.index_kinds.contains(&node.kind))
             .filter(|node| changed_files.contains(&node.source_file))
+            .collect();
+        // delete stale vectors by deterministic point ID — O(changed_nodes) vs O(collection_size)
+        // filter scan. OR-filter on source_file was timing out on 199K collections.
+        self.delete_points_by_node_ids(&changed_nodes).await?;
+
+        // only re-embed nodes that pass the kind filter
+        let filtered_nodes: Vec<&graphify_core::Node> = changed_nodes
+            .into_iter()
+            .filter(|node| lt_config.index_kinds.contains(&node.kind))
             .collect();
 
         if filtered_nodes.is_empty() {
@@ -684,59 +690,51 @@ impl QdrantMemoryStore {
         self.embed_and_upsert(&filtered_nodes, workspace_key).await
     }
 
-    /// Deletes all Qdrant points whose payload `source_file` matches any of `files`.
+    /// Deletes stale vectors by deterministic point ID — O(changed_nodes) vs O(collection_size).
     ///
-    /// Chunks the file list to avoid oversized requests and timeouts — mirrors the
-    /// chunked-upload pattern already used by [`Self::upsert_grpc`] and [`Self::upsert_rest`].
-    async fn delete_points_by_source_files(
+    /// Replaced `delete_points_by_source_files` (OR-filter scan on source_file) which
+    /// timed out on 199K collections even with keyword indexes and 64-file chunks.
+    async fn delete_points_by_node_ids(
         &self,
-        files: &std::collections::HashSet<String>,
+        nodes: &[&graphify_core::Node],
     ) -> Result<()> {
-        if files.is_empty() {
+        if nodes.is_empty() {
             return Ok(());
         }
         let lt_config = &self.config;
         let qdrant_config = &lt_config.qdrant;
         let collection = &qdrant_config.collection;
 
-        // ponytail: chunk the file list so a single delete RPC doesn't carry thousands of
-        // OR-conditions — Qdrant's default max_request_size (32 MB) and the 10 s HTTP timeout
-        // are both easily exceeded with large changed-file sets.
-        let file_vec: Vec<&String> = files.iter().collect();
-
-        for chunk in file_vec.chunks(256) {
+        // chunk to avoid oversized gRPC requests — 256 IDs per chunk is safe
+        for chunk in nodes.chunks(256) {
             if let Some(ref client) = self.grpc_client {
-                use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
+                use qdrant_client::qdrant::DeletePointsBuilder;
 
-                let filter = Filter::should(
-                    chunk
-                        .iter()
-                        .map(|f| Condition::matches("source_file", f.to_string())),
-                );
+                let ids: Vec<u64> = chunk
+                    .iter()
+                    .map(|n| hash_node_id(&n.id.0))
+                    .collect();
                 client
                     .delete_points(
                         DeletePointsBuilder::new(collection)
-                            .points(filter)
+                            .points(ids)
+                            .timeout(120)
                             .wait(false),
                     )
                     .await?;
             } else {
-                // REST fallback: POST /collections/{c}/points/delete with a payload filter
+                // REST fallback: POST /collections/{c}/points/delete with point IDs
                 let url = format!(
                     "{}/collections/{}/points/delete",
                     qdrant_config.url.trim_end_matches('/'),
                     collection
                 );
-                let filter_payload = serde_json::json!({
-                    "should": chunk.iter().map(|f| serde_json::json!({
-                        "key": "source_file",
-                        "match": { "value": f }
-                    })).collect::<Vec<_>>()
-                });
-                let req = self
-                    .client
-                    .post(&url)
-                    .json(&serde_json::json!({ "filter": filter_payload }));
+                let ids: Vec<u64> = chunk
+                    .iter()
+                    .map(|n| hash_node_id(&n.id.0))
+                    .collect();
+                let payload = serde_json::json!({ "points": ids });
+                let req = self.client.post(&url).json(&payload);
                 let req = if let Some(ref key) = qdrant_config.api_key {
                     req.header("api-key", key)
                 } else {
