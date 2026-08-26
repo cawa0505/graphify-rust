@@ -685,6 +685,9 @@ impl QdrantMemoryStore {
     }
 
     /// Deletes all Qdrant points whose payload `source_file` matches any of `files`.
+    ///
+    /// Chunks the file list to avoid oversized requests and timeouts — mirrors the
+    /// chunked-upload pattern already used by [`Self::upsert_grpc`] and [`Self::upsert_rest`].
     async fn delete_points_by_source_files(
         &self,
         files: &std::collections::HashSet<String>,
@@ -696,49 +699,53 @@ impl QdrantMemoryStore {
         let qdrant_config = &lt_config.qdrant;
         let collection = &qdrant_config.collection;
 
-        if let Some(ref client) = self.grpc_client {
-            use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
+        // ponytail: chunk the file list so a single delete RPC doesn't carry thousands of
+        // OR-conditions — Qdrant's default max_request_size (32 MB) and the 10 s HTTP timeout
+        // are both easily exceeded with large changed-file sets.
+        let file_vec: Vec<&String> = files.iter().collect();
 
-            // ponytail: OR-match on source_file keeps a single delete RPC per batch of files
-            let filter = Filter::should(
-                files
-                    .iter()
-                    .cloned()
-                    .map(|f| Condition::matches("source_file", f)),
-            );
-            client
-                .delete_points(
-                    DeletePointsBuilder::new(collection)
-                        .points(filter)
-                        .wait(false),
-                )
-                .await?;
-            return Ok(());
+        for chunk in file_vec.chunks(256) {
+            if let Some(ref client) = self.grpc_client {
+                use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
+
+                let filter = Filter::should(
+                    chunk
+                        .iter()
+                        .map(|f| Condition::matches("source_file", f.to_string())),
+                );
+                client
+                    .delete_points(
+                        DeletePointsBuilder::new(collection)
+                            .points(filter)
+                            .wait(false),
+                    )
+                    .await?;
+            } else {
+                // REST fallback: POST /collections/{c}/points/delete with a payload filter
+                let url = format!(
+                    "{}/collections/{}/points/delete",
+                    qdrant_config.url.trim_end_matches('/'),
+                    collection
+                );
+                let filter_payload = serde_json::json!({
+                    "should": chunk.iter().map(|f| serde_json::json!({
+                        "key": "source_file",
+                        "match": { "value": f }
+                    })).collect::<Vec<_>>()
+                });
+                let req = self
+                    .client
+                    .post(&url)
+                    .json(&serde_json::json!({ "filter": filter_payload }));
+                let req = if let Some(ref key) = qdrant_config.api_key {
+                    req.header("api-key", key)
+                } else {
+                    req
+                };
+                let res = req.send().await?;
+                res.error_for_status()?;
+            }
         }
-
-        // REST fallback: POST /collections/{c}/points/delete with a payload filter
-        let url = format!(
-            "{}/collections/{}/points/delete",
-            qdrant_config.url.trim_end_matches('/'),
-            collection
-        );
-        let filter_payload = serde_json::json!({
-            "should": files.iter().map(|f| serde_json::json!({
-                "key": "source_file",
-                "match": { "value": f }
-            })).collect::<Vec<_>>()
-        });
-        let req = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({ "filter": filter_payload }));
-        let req = if let Some(ref key) = qdrant_config.api_key {
-            req.header("api-key", key)
-        } else {
-            req
-        };
-        let res = req.send().await?;
-        res.error_for_status()?;
         Ok(())
     }
 
