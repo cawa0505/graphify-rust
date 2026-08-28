@@ -40,10 +40,30 @@ def helper() -> None:
 "#;
         let result = run_extract(content, "py")?;
         assert_eq!(result.nodes[0].language, "python");
-        assert!(result.nodes.iter().any(|n| n.kind == "class" && n.label == "Greeter"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "greet"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "farewell"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "helper"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "class" && n.label == "Greeter")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "greet")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "farewell")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "helper")
+        );
         assert!(result.edges.iter().any(|e| e.relation == "imports"));
         Ok(())
     }
@@ -77,10 +97,30 @@ pub fn main() -> Result<()> {
 "#;
         let result = run_extract(content, "rs")?;
         assert_eq!(result.nodes[0].language, "rust");
-        assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "Config"));
-        assert!(result.nodes.iter().any(|n| n.kind == "trait" && n.label == "Runner"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "main"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "run"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "struct" && n.label == "Config")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "trait" && n.label == "Runner")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "main")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "run")
+        );
         assert!(result.edges.iter().any(|e| e.relation == "contains"));
         Ok(())
     }
@@ -109,9 +149,24 @@ func main() {
 "#;
         let result = run_extract(content, "go")?;
         assert_eq!(result.nodes[0].language, "go");
-        assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "User"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "greet"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "main"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "struct" && n.label == "User")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "greet")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "main")
+        );
         assert!(result.edges.iter().any(|e| e.relation == "imports"));
         Ok(())
     }
@@ -140,9 +195,24 @@ function helper() {
 "#;
         let result = run_extract(content, "js")?;
         assert_eq!(result.nodes[0].language, "javascript");
-        assert!(result.nodes.iter().any(|n| n.kind == "class" && n.label == "Service"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "fetch"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "helper"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "class" && n.label == "Service")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "fetch")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "helper")
+        );
         assert!(result.edges.iter().any(|e| e.relation == "imports"));
         Ok(())
     }
@@ -166,8 +236,18 @@ class Hello {
             println!("Node: kind={}, label={}", n.kind, n.label);
         }
         assert_eq!(result.nodes[0].language, "php");
-        assert!(result.nodes.iter().any(|n| n.kind == "class" && n.label == "Hello"));
-        assert!(result.nodes.iter().any(|n| n.kind == "method" && n.label == "greet"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "class" && n.label == "Hello")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "method" && n.label == "greet")
+        );
         Ok(())
     }
 
@@ -194,9 +274,24 @@ void main() {
 ";
         let result = run_extract(content, "c")?;
         assert_eq!(result.nodes[0].language, "c");
-        assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "Point"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "add"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "main"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "struct" && n.label == "Point")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "add")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "main")
+        );
         Ok(())
     }
 
@@ -224,9 +319,24 @@ int main() {
 ";
         let result = run_extract(content, "cpp")?;
         assert_eq!(result.nodes[0].language, "cpp");
-        assert!(result.nodes.iter().any(|n| n.kind == "struct" && n.label == "Vec2"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "length"));
-        assert!(result.nodes.iter().any(|n| n.kind == "function" && n.label == "main"));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "struct" && n.label == "Vec2")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "length")
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.kind == "function" && n.label == "main")
+        );
         Ok(())
     }
 

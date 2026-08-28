@@ -76,7 +76,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn seeded_db() -> Result<(RegistryDb, TempDir), graphify_registry::RegistryError> {
-        let dir = TempDir::new().map_err(|e| graphify_registry::RegistryError::Schema(format!("tempdir: {e}")))?;
+        let dir = TempDir::new()
+            .map_err(|e| graphify_registry::RegistryError::Schema(format!("tempdir: {e}")))?;
         let db_path = dir.path().join("test.db");
         let db = RegistryDb::open(&db_path)?;
         db.upsert_workspace("test_workspace", "/tmp/test")?;
@@ -92,10 +93,16 @@ mod tests {
 
         breaker.record_failure("plugin_a");
         breaker.record_failure("plugin_a");
-        assert!(!breaker.is_bypassed("plugin_a"), "2 failures should not quarantine");
+        assert!(
+            !breaker.is_bypassed("plugin_a"),
+            "2 failures should not quarantine"
+        );
 
         breaker.record_failure("plugin_a");
-        assert!(breaker.is_bypassed("plugin_a"), "3rd failure should quarantine");
+        assert!(
+            breaker.is_bypassed("plugin_a"),
+            "3rd failure should quarantine"
+        );
         Ok(())
     }
 

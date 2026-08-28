@@ -301,7 +301,10 @@ impl RegistryDb {
     /// # Errors
     ///
     /// Returns `RegistryError` on `SQLite` failure.
-    pub fn find_workspace_by_path(&self, root_path: &str) -> Result<Option<WorkspaceRow>, RegistryError> {
+    pub fn find_workspace_by_path(
+        &self,
+        root_path: &str,
+    ) -> Result<Option<WorkspaceRow>, RegistryError> {
         self.conn
             .query_row(
                 "SELECT workspace_key, root_path, is_active, last_indexed_at
@@ -761,7 +764,11 @@ mod tests {
         assert_eq!(regs.len(), 2, "row count preserved across migration");
         let opendoc = db.get_registration("opendoc", "ws-a")?;
         let opendoc = unwrap_opt(opendoc, "opendoc registration exists");
-        assert_eq!(opendoc.status, PluginStatus::Healthy, "Ready maps to Healthy");
+        assert_eq!(
+            opendoc.status,
+            PluginStatus::Healthy,
+            "Ready maps to Healthy"
+        );
         let sdk = db.get_registration("sdk", "ws-a")?;
         let sdk = unwrap_opt(sdk, "sdk registration exists");
         assert_eq!(sdk.status, PluginStatus::Unavailable, "Unavailable stays");

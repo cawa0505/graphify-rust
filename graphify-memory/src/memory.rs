@@ -690,14 +690,11 @@ impl QdrantMemoryStore {
         self.embed_and_upsert(&filtered_nodes, workspace_key).await
     }
 
-    /// Deletes stale vectors by deterministic point ID — O(changed_nodes) vs O(collection_size).
+    /// Deletes stale vectors by deterministic point ID — `O(changed_nodes)` vs `O(collection_size)`.
     ///
-    /// Replaced `delete_points_by_source_files` (OR-filter scan on source_file) which
+    /// Replaced `delete_points_by_source_files` (OR-filter scan on `source_file`) which
     /// timed out on 199K collections even with keyword indexes and 64-file chunks.
-    async fn delete_points_by_node_ids(
-        &self,
-        nodes: &[&graphify_core::Node],
-    ) -> Result<()> {
+    async fn delete_points_by_node_ids(&self, nodes: &[&graphify_core::Node]) -> Result<()> {
         if nodes.is_empty() {
             return Ok(());
         }
@@ -710,10 +707,7 @@ impl QdrantMemoryStore {
             if let Some(ref client) = self.grpc_client {
                 use qdrant_client::qdrant::DeletePointsBuilder;
 
-                let ids: Vec<u64> = chunk
-                    .iter()
-                    .map(|n| hash_node_id(&n.id.0))
-                    .collect();
+                let ids: Vec<u64> = chunk.iter().map(|n| hash_node_id(&n.id.0)).collect();
                 client
                     .delete_points(
                         DeletePointsBuilder::new(collection)
@@ -729,10 +723,7 @@ impl QdrantMemoryStore {
                     qdrant_config.url.trim_end_matches('/'),
                     collection
                 );
-                let ids: Vec<u64> = chunk
-                    .iter()
-                    .map(|n| hash_node_id(&n.id.0))
-                    .collect();
+                let ids: Vec<u64> = chunk.iter().map(|n| hash_node_id(&n.id.0)).collect();
                 let payload = serde_json::json!({ "points": ids });
                 let req = self.client.post(&url).json(&payload);
                 let req = if let Some(ref key) = qdrant_config.api_key {

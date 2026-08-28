@@ -169,19 +169,28 @@ mod tests {
     fn parse_input_rejects_missing_or_empty_inputs() {
         // Missing workspace_key is now auto-detected (not an error)
         let auto_detected = parse_input(&json!({ "query": "q" }));
-        assert!(auto_detected.is_ok(), "missing workspace_key should auto-detect");
+        assert!(
+            auto_detected.is_ok(),
+            "missing workspace_key should auto-detect"
+        );
         let wk = match auto_detected {
             Ok(v) => v.workspace_key,
             Err(_) => return,
         };
-        assert!(!wk.is_empty(), "auto-detected workspace_key must not be empty");
+        assert!(
+            !wk.is_empty(),
+            "auto-detected workspace_key must not be empty"
+        );
 
         let missing_query = parse_input(&json!({ "workspace_key": "ws" }));
         assert!(missing_query.is_err());
 
         // Empty workspace_key is now auto-detected (not an error)
         let auto_detected2 = parse_input(&json!({ "workspace_key": "", "query": "q" }));
-        assert!(auto_detected2.is_ok(), "empty workspace_key should auto-detect");
+        assert!(
+            auto_detected2.is_ok(),
+            "empty workspace_key should auto-detect"
+        );
 
         let empty_query = parse_input(&json!({ "workspace_key": "ws", "query": "  " }));
         assert!(empty_query.is_err());

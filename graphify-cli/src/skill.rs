@@ -129,9 +129,16 @@ fn execute_install(global: bool, base_path: PathBuf, targets: &InstallTargets) -
         fs::create_dir_all(&opencode_dir)
             .with_context(|| format!("Failed to create directory: {}", opencode_dir.display()))?;
         let skill_file = opencode_dir.join("SKILL.md");
-        fs::write(&skill_file, GRAPHIFY_SKILL_CONTENT)
-            .with_context(|| format!("Failed to write: {}", skill_file.display()))?;
-        println!("  - Installed OpenCode skill: {}", skill_file.display());
+        if skill_file.exists() {
+            println!(
+                "  - Skipped OpenCode skill (already exists): {}",
+                skill_file.display()
+            );
+        } else {
+            fs::write(&skill_file, GRAPHIFY_SKILL_CONTENT)
+                .with_context(|| format!("Failed to write: {}", skill_file.display()))?;
+            println!("  - Installed OpenCode skill: {}", skill_file.display());
+        }
     }
 
     if targets.cline {
@@ -161,4 +168,107 @@ fn append_or_create(path: &Path, content: &str) -> Result<()> {
             .with_context(|| format!("Failed to write rules to: {}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_temp_dir() -> tempfile::TempDir {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("failed to create temp dir");
+        };
+        dir
+    }
+
+    #[test]
+    fn test_install_creates_skill_when_not_exists() {
+        let dir = create_temp_dir();
+        let targets = InstallTargets {
+            opencode: true,
+            cline: false,
+            cursor: false,
+        };
+
+        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+
+        let skill_file = dir.path().join(".opencode/skills/graphify/SKILL.md");
+        assert!(skill_file.exists(), "SKILL.md should be created");
+        let content = fs::read_to_string(&skill_file).expect("should read file");
+        assert!(content.contains("Graphify AST Semantic Graph First"));
+    }
+
+    #[test]
+    fn test_install_skips_existing_skill() {
+        let dir = create_temp_dir();
+        let targets = InstallTargets {
+            opencode: true,
+            cline: false,
+            cursor: false,
+        };
+
+        // Create existing SKILL.md with old content
+        let skill_dir = dir.path().join(".opencode/skills/graphify");
+        fs::create_dir_all(&skill_dir).expect("failed to create skill dir");
+        let skill_file = skill_dir.join("SKILL.md");
+        let original_content =
+            "# Old Graphify Skill\n\nThis is old content that should not be overwritten.";
+        fs::write(&skill_file, original_content).expect("failed to write original content");
+
+        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+
+        let content = fs::read_to_string(&skill_file).expect("should read file");
+        assert_eq!(content, original_content, "SKILL.md should not be modified");
+    }
+
+    #[test]
+    fn test_install_skips_existing_skill_different_content() {
+        let dir = create_temp_dir();
+        let targets = InstallTargets {
+            opencode: true,
+            cline: false,
+            cursor: false,
+        };
+
+        // Create existing SKILL.md with completely different content
+        let skill_dir = dir.path().join(".opencode/skills/graphify");
+        fs::create_dir_all(&skill_dir).expect("failed to create skill dir");
+        let skill_file = skill_dir.join("SKILL.md");
+        let original_content = "Completely unrelated skill content here.";
+        fs::write(&skill_file, original_content).expect("failed to write original content");
+
+        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+
+        let content = fs::read_to_string(&skill_file).expect("should read file");
+        assert_eq!(content, original_content, "SKILL.md should not be modified");
+    }
+
+    #[test]
+    fn test_install_reinstall_after_deletion() {
+        let dir = create_temp_dir();
+        let targets = InstallTargets {
+            opencode: true,
+            cline: false,
+            cursor: false,
+        };
+
+        // First install
+        execute_install(false, dir.path().to_path_buf(), &targets)
+            .expect("first install should succeed");
+
+        let skill_file = dir.path().join(".opencode/skills/graphify/SKILL.md");
+        let first_content = fs::read_to_string(&skill_file).expect("should read file");
+
+        // Delete and reinstall
+        fs::remove_file(&skill_file).expect("failed to delete skill file");
+        execute_install(false, dir.path().to_path_buf(), &targets)
+            .expect("reinstall should succeed");
+
+        let second_content =
+            fs::read_to_string(&skill_file).expect("should read file after reinstall");
+        assert_eq!(
+            first_content, second_content,
+            "SKILL.md should be recreated with same content"
+        );
+    }
 }

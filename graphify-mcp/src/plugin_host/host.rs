@@ -153,7 +153,8 @@ mod tests {
 
     /// Create a temp db with a test workspace seeded.
     fn test_db() -> Result<(RegistryDb, TempDir), graphify_registry::RegistryError> {
-        let dir = TempDir::new().map_err(|e| graphify_registry::RegistryError::Schema(format!("tempdir: {e}")))?;
+        let dir = TempDir::new()
+            .map_err(|e| graphify_registry::RegistryError::Schema(format!("tempdir: {e}")))?;
         let db_path = dir.path().join("test.db");
         let db = RegistryDb::open(&db_path)?;
         db.upsert_workspace("test_workspace", "/tmp/test")?;

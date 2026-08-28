@@ -236,12 +236,23 @@ mod tests {
     // --- validate_envelope ---
 
     fn valid_env() -> PluginMemoryEnvelope<serde_json::Value> {
-        PluginMemoryEnvelope::new("ws-a", "plug-a", "rec-1", "kind", 1_800_000_000, vec![], serde_json::json!({"ok": true}))
+        PluginMemoryEnvelope::new(
+            "ws-a",
+            "plug-a",
+            "rec-1",
+            "kind",
+            1_800_000_000,
+            vec![],
+            serde_json::json!({"ok": true}),
+        )
     }
 
     fn assert_validation_error(env: &PluginMemoryEnvelope<serde_json::Value>, expected: &str) {
         match validate_envelope(env) {
-            Err(msg) => assert!(msg.contains(expected), "error {msg:?} does not contain {expected:?}"),
+            Err(msg) => assert!(
+                msg.contains(expected),
+                "error {msg:?} does not contain {expected:?}"
+            ),
             Ok(()) => panic!("expected Err({expected:?}), got Ok"),
         }
     }
@@ -295,7 +306,15 @@ mod tests {
 
     #[test]
     fn validate_envelope_null_payload() {
-        let e = PluginMemoryEnvelope::new("ws-a", "plug-a", "rec-1", "kind", 1_800_000_000, vec![], serde_json::Value::Null);
+        let e = PluginMemoryEnvelope::new(
+            "ws-a",
+            "plug-a",
+            "rec-1",
+            "kind",
+            1_800_000_000,
+            vec![],
+            serde_json::Value::Null,
+        );
         assert_validation_error(&e, "payload");
     }
 
