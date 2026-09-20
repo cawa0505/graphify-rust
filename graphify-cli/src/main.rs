@@ -706,7 +706,11 @@ fn collect_files(dir: &Path, file_paths: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') || name == "target" || name == "node_modules" {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "vendor"
+                {
                     continue;
                 }
             }

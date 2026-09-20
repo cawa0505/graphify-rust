@@ -165,7 +165,8 @@ fn traverse_tree(
                 if let Some(name_node) = current.child_by_field_name("name") {
                     let name = name_node.utf8_text(source_bytes).unwrap_or("");
                     if !name.is_empty() {
-                        let node_id = NodeId(format!("namespace:{name}"));
+                        // namespace 全域可同名，補 file 消歧避免跨檔 id 衝突
+                        let node_id = NodeId(format!("{file_path}:namespace:{name}"));
                         let start_line = current.start_position().row + 1;
                         nodes.push(Node {
                             id: node_id.clone(),

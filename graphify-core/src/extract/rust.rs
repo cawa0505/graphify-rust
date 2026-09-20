@@ -123,8 +123,10 @@ fn traverse_tree(
                     let name = name_node
                         .utf8_text(source_bytes)
                         .unwrap_or("UnknownFunction");
-                    let node_id = NodeId(format!("{}:function:{}", file_path, name));
+                    // 同檔多個同名 fn（多個 impl 區塊各有一個 `fn new`）會撞 id，
+                    // 補起始行號消歧：{file}:function:{name}@{line}
                     let start_line = current.start_position().row + 1;
+                    let node_id = NodeId(format!("{}:function:{}@{}", file_path, name, start_line));
                     nodes.push(Node {
                         id: node_id.clone(),
                         label: name.to_string(),

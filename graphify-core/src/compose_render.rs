@@ -5,7 +5,7 @@
 //! `npx box-of-rain` subprocess renders ASCII/SVG.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, anyhow};
 use serde_json::{Value, json};
@@ -84,29 +84,25 @@ pub fn project(unified: &UnifiedGraph) -> Value {
 /// so failure detection checks stdout for `Error:` lines in addition to the
 /// exit status. Output is never fabricated — subprocess stdout passes through.
 pub fn render_via_npx(projection: &Value, svg: bool) -> anyhow::Result<String> {
+    // box-of-rain 用同步 readFileSync 讀 stdin：pipe 未就緒時 read() 回 EAGAIN
+    // 直接炸（npx 墊片啟動快慢不定 → 間歇性失敗）。改寫暫存檔、以檔案當 stdin，
+    // 檔案讀取永不 EAGAIN。
+    let payload = serde_json::to_vec_pretty(projection).context("投影 JSON 序列化失敗")?;
+    let mut tmp = tempfile::NamedTempFile::new().context("建立暫存檔失敗")?;
+    tmp.write_all(&payload).context("寫入暫存檔失敗")?;
+    tmp.flush().ok();
+
+    let stdin_file = tmp.reopen().context("重開暫存檔失敗")?;
     let mut cmd = Command::new("npx");
     cmd.arg("-y").arg("box-of-rain");
     if svg {
         cmd.arg("--svg");
     }
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(stdin_file);
 
-    let mut child = cmd
-        .spawn()
+    let output = cmd
+        .output()
         .map_err(|e| anyhow!("無法啟動 npx（需要 Node.js/npx 環境）: {e}"))?;
-    let stdin = child.stdin.take().context("npx stdin 未連接")?;
-    let payload = serde_json::to_string(projection).context("投影 JSON 序列化失敗")?;
-    let mut stdin = stdin;
-    stdin
-        .write_all(payload.as_bytes())
-        .context("寫入 npx stdin 失敗")?;
-    drop(stdin); // EOF so box-of-rain starts rendering
-
-    let output = child
-        .wait_with_output()
-        .context("等待 box-of-rain 輸出失敗")?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
