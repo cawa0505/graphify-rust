@@ -15,11 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 第一方內嵌 plugin 以 ../../GraphifyPlugins path dependency 靜態連結
-      # （repo 外一層）。checkout action 的 path 不允許 ..，改以 git clone 放到
-      # 與 repo 同層（對齊本機開發目錄結構）
-      - name: Clone GraphifyPlugins (path dependency)
-        run: git clone --depth 1 https://github.com/cawa0505/graphify-plugins.git ../GraphifyPlugins
+      # 第一方內嵌 plugin 以 ../../GraphifyRust path dependency 靜態連結
+      # （graphify-plugins 內部 Cargo.toml 硬編碼 ../../GraphifyRust）。
+      # CI checkout 產生 graphify-rust/（全小寫），Linux 大小寫敏感 → 解析失敗。
+      # 複製本機開發結構：repos/GraphifyRust + repos/GraphifyPlugins，
+      # 在 parent 建 GraphifyRust → graphify-rust 符號鏈接。
+      - name: Prepare path deps (GraphifyRust symlink + clone plugins)
+        run: |
+          cd ..
+          ln -s graphify-rust GraphifyRust
+          git clone --depth 1 https://github.com/cawa0505/graphify-plugins.git GraphifyPlugins
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
