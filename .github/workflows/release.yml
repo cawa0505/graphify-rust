@@ -14,16 +14,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: GraphifyRust
 
-      # 第一方內嵌 plugin 以 ../../GraphifyRust path dependency 靜態連結
-      # （graphify-plugins 內部 Cargo.toml 硬編碼 ../../GraphifyRust）。
-      # CI checkout 產生 graphify-rust/（全小寫），Linux 大小寫敏感 → 解析失敗。
-      # 複製本機開發結構：repos/GraphifyRust + repos/GraphifyPlugins，
-      # 在 parent 建 GraphifyRust → graphify-rust 符號鏈接。
-      - name: Prepare path deps (GraphifyRust symlink + clone plugins)
+      - name: Clone GraphifyPlugins
         run: |
-          cd ..
-          ln -s graphify-rust GraphifyRust
           git clone --depth 1 https://github.com/cawa0505/graphify-plugins.git GraphifyPlugins
 
       - name: Install Rust toolchain
@@ -35,16 +30,19 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+            GraphifyRust/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('GraphifyRust/Cargo.lock') }}
 
       - name: Build release binary
+        working-directory: GraphifyRust
         run: cargo build --release -p graphify-cli
 
       - name: Run tests
+        working-directory: GraphifyRust
         run: cargo test --workspace
 
       - name: Package
+        working-directory: GraphifyRust
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
@@ -57,4 +55,4 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/graphify-*
+            GraphifyRust/dist/graphify-*
