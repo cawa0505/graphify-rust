@@ -3,6 +3,7 @@
 // ponytail: allow collapsible_if for nested directory filtering checks
 #![allow(clippy::collapsible_if)]
 
+pub mod compose;
 pub mod plugin_host;
 pub mod rehydrate;
 pub mod skill;
@@ -132,6 +133,11 @@ enum Commands {
         #[command(subcommand)]
         command: CoverageCommand,
     },
+    /// 以 Assembly Manifest (YAML) 組裝多個 workspace 成統一圖（跨 workspace 關聯）
+    Compose {
+        #[command(subcommand)]
+        command: ComposeCommand,
+    },
     /// Initialize a project with graphify + guardrail-mcp infrastructure (state.json, .gitignore, AST graph)
     Init {
         /// Project directory (defaults to current directory)
@@ -153,6 +159,28 @@ pub enum PluginCommand {
     },
     /// List all registered plugins with their current health status
     List,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ComposeCommand {
+    /// 驗證 manifest：workspace 路徑、relation 端點、節點引用全部可解析
+    Validate {
+        /// Assembly Manifest YAML 路徑
+        manifest: std::path::PathBuf,
+    },
+    /// 建立統一圖並輸出 JSON 摘要（`workspaces` / `total_nodes` / `total_edges` / `cross_edges`）
+    Graph {
+        /// Assembly Manifest YAML 路徑
+        manifest: std::path::PathBuf,
+    },
+    /// 投影統一圖並以 box-of-rain 渲染 ASCII 圖（--svg 輸出 SVG）
+    Render {
+        /// Assembly Manifest YAML 路徑
+        manifest: std::path::PathBuf,
+        /// 輸出 SVG 而非 ASCII
+        #[arg(long)]
+        svg: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -402,6 +430,11 @@ fn main() -> Result<()> {
         Commands::Opendoc { command } => run_opendoc(command)?,
         Commands::Review { command } => run_review(command)?,
         Commands::Coverage { command } => run_coverage(command)?,
+        Commands::Compose { command } => match command {
+            ComposeCommand::Validate { manifest } => compose::validate(&manifest)?,
+            ComposeCommand::Graph { manifest } => compose::graph(&manifest)?,
+            ComposeCommand::Render { manifest, svg } => compose::render(&manifest, svg)?,
+        },
         Commands::Init { path } => run_init(&path)?,
     }
     Ok(())

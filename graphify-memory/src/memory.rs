@@ -1183,9 +1183,10 @@ fn json_to_condition(val: &Value) -> Option<qdrant_client::qdrant::Condition> {
     Some(condition)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::future::Future;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
@@ -1211,20 +1212,23 @@ mod tests {
             self.available
         }
 
-        async fn search(
+        // Trait method is async; the mock body has no .await points, so we
+        // return an immediately-ready future (clippy::unused_async_trait_impl).
+        fn search(
             &self,
             workspace_key: &str,
             query: &str,
             limit: usize,
-        ) -> Result<Vec<MemoryNode>> {
+        ) -> impl Future<Output = Result<Vec<MemoryNode>>> {
             self.recorded
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push((workspace_key.to_string(), query.to_string(), limit));
-            match &self.results {
+            let outcome: Result<Vec<MemoryNode>> = match &self.results {
                 Ok(nodes) => Ok(nodes.clone()),
                 Err(e) => Err(anyhow!("{e}")),
-            }
+            };
+            std::future::ready(outcome)
         }
     }
 

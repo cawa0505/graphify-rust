@@ -12,7 +12,7 @@ An extremely high-performance, low-latency static code AST semantic graph constr
 
 Detailed system architecture, command specifications, and integration guides have been modularized into separate manuals:
 
-*   **[CLI Manual](docs/cli.md)**: Documenting all commands including `extract`, `query`, `path`, `install-skill`, `tui`, and the new `index` command for one-click semantic vector store ingestion.
+*   **[CLI Manual](docs/cli.md)**: Documenting all commands including `extract`, `query`, `path`, `install-skill`, `tui`, `index`, `init`, `handoff` (with `skill install`), `plugin`, `workspace`, `opendoc`, `review`, `coverage`, and `compose` (multi-workspace Assembly Manifest → unified graph → diagram).
 *   **[Core Engine](docs/core.md)**: Deep dive into Tree-sitter AST parsing, petgraph pre-allocation optimizations, and the `.toon` serialization logic which saves 60% in token overhead.
 *   **[LLM & Memory Pipeline](docs/llm.md)**: Explaining the lock-free thread-safe `AtomicUsize` multi-key rotation, 429 rate limit tolerance, backup provider failover, and local Qdrant vector store implementation.
 *   **[MCP Server Spec](docs/mcp.md)**: Detailing how the graph and semantic RAG search capabilities (Summary, Query Node, Path, Reindex) integrate with AI development environments.

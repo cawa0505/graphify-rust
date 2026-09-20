@@ -190,11 +190,15 @@ mod tests {
             cursor: false,
         };
 
-        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+        if let Err(e) = execute_install(false, dir.path().to_path_buf(), &targets) {
+            panic!("install should succeed: {e}");
+        }
 
         let skill_file = dir.path().join(".opencode/skills/graphify/SKILL.md");
         assert!(skill_file.exists(), "SKILL.md should be created");
-        let content = fs::read_to_string(&skill_file).expect("should read file");
+        let Ok(content) = fs::read_to_string(&skill_file) else {
+            panic!("should read file");
+        };
         assert!(content.contains("Graphify AST Semantic Graph First"));
     }
 
@@ -209,15 +213,23 @@ mod tests {
 
         // Create existing SKILL.md with old content
         let skill_dir = dir.path().join(".opencode/skills/graphify");
-        fs::create_dir_all(&skill_dir).expect("failed to create skill dir");
+        if let Err(e) = fs::create_dir_all(&skill_dir) {
+            panic!("failed to create skill dir: {e}");
+        }
         let skill_file = skill_dir.join("SKILL.md");
         let original_content =
             "# Old Graphify Skill\n\nThis is old content that should not be overwritten.";
-        fs::write(&skill_file, original_content).expect("failed to write original content");
+        if let Err(e) = fs::write(&skill_file, original_content) {
+            panic!("failed to write original content: {e}");
+        }
 
-        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+        if let Err(e) = execute_install(false, dir.path().to_path_buf(), &targets) {
+            panic!("install should succeed: {e}");
+        }
 
-        let content = fs::read_to_string(&skill_file).expect("should read file");
+        let Ok(content) = fs::read_to_string(&skill_file) else {
+            panic!("should read file");
+        };
         assert_eq!(content, original_content, "SKILL.md should not be modified");
     }
 
@@ -232,14 +244,22 @@ mod tests {
 
         // Create existing SKILL.md with completely different content
         let skill_dir = dir.path().join(".opencode/skills/graphify");
-        fs::create_dir_all(&skill_dir).expect("failed to create skill dir");
+        if let Err(e) = fs::create_dir_all(&skill_dir) {
+            panic!("failed to create skill dir: {e}");
+        }
         let skill_file = skill_dir.join("SKILL.md");
         let original_content = "Completely unrelated skill content here.";
-        fs::write(&skill_file, original_content).expect("failed to write original content");
+        if let Err(e) = fs::write(&skill_file, original_content) {
+            panic!("failed to write original content: {e}");
+        }
 
-        execute_install(false, dir.path().to_path_buf(), &targets).expect("install should succeed");
+        if let Err(e) = execute_install(false, dir.path().to_path_buf(), &targets) {
+            panic!("install should succeed: {e}");
+        }
 
-        let content = fs::read_to_string(&skill_file).expect("should read file");
+        let Ok(content) = fs::read_to_string(&skill_file) else {
+            panic!("should read file");
+        };
         assert_eq!(content, original_content, "SKILL.md should not be modified");
     }
 
@@ -253,19 +273,26 @@ mod tests {
         };
 
         // First install
-        execute_install(false, dir.path().to_path_buf(), &targets)
-            .expect("first install should succeed");
+        if let Err(e) = execute_install(false, dir.path().to_path_buf(), &targets) {
+            panic!("first install should succeed: {e}");
+        }
 
         let skill_file = dir.path().join(".opencode/skills/graphify/SKILL.md");
-        let first_content = fs::read_to_string(&skill_file).expect("should read file");
+        let Ok(first_content) = fs::read_to_string(&skill_file) else {
+            panic!("should read file");
+        };
 
         // Delete and reinstall
-        fs::remove_file(&skill_file).expect("failed to delete skill file");
-        execute_install(false, dir.path().to_path_buf(), &targets)
-            .expect("reinstall should succeed");
+        if let Err(e) = fs::remove_file(&skill_file) {
+            panic!("failed to delete skill file: {e}");
+        }
+        if let Err(e) = execute_install(false, dir.path().to_path_buf(), &targets) {
+            panic!("reinstall should succeed: {e}");
+        }
 
-        let second_content =
-            fs::read_to_string(&skill_file).expect("should read file after reinstall");
+        let Ok(second_content) = fs::read_to_string(&skill_file) else {
+            panic!("should read file after reinstall");
+        };
         assert_eq!(
             first_content, second_content,
             "SKILL.md should be recreated with same content"

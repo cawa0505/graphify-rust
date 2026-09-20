@@ -9,8 +9,12 @@
 // ponytail: allow implicit_hasher as we use std HashMap with default SipHash 1-3
 #![allow(clippy::implicit_hasher)]
 
+pub mod compose_manifest;
+pub mod compose_merge;
+pub mod compose_render;
 pub mod extract;
 pub mod graph;
+pub mod manifest;
 pub mod plugin;
 pub mod plugin_memory;
 pub mod toon;
@@ -18,6 +22,9 @@ pub mod types;
 
 pub use extract::extract_file;
 pub use graph::{build_graph, find_shortest_path, query_bfs};
+pub use manifest::{
+    AssemblyManifest, ManifestIdError, RelationEntry, WorkspaceEntry, split_node_reference,
+};
 pub use plugin::{
     GraphUpdateEvent, GraphUpdateKind, GraphifyPlugin, NotifyCallback, WorkspaceContext,
     derive_workspace_key,

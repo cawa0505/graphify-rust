@@ -443,6 +443,41 @@ fn handle_request(
                     }
                 },
                 {
+                    "name": "graphify_compose_read",
+                    "description": "Read an Assembly Manifest (YAML) describing cross-workspace architecture relations; validates every workspace path and referenced node and returns the parsed manifest with per-workspace graph summaries",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "manifest": { "type": "string", "description": "Path to the Assembly Manifest YAML file" }
+                        },
+                        "required": ["manifest"]
+                    }
+                },
+                {
+                    "name": "graphify_compose_write",
+                    "description": "Create or replace an Assembly Manifest (YAML) file; workspace paths and node references are validated BEFORE writing and the file is written atomically (on validation failure the file is left byte-for-byte unchanged)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "manifest": { "type": "string", "description": "Path of the Assembly Manifest YAML file to write" },
+                            "content": { "type": "string", "description": "Full YAML content of the assembly manifest" }
+                        },
+                        "required": ["manifest", "content"]
+                    }
+                },
+                {
+                    "name": "graphify_compose_render",
+                    "description": "Render the unified cross-workspace graph as ASCII (or SVG) via box-of-rain; returns the rendered diagram text",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "manifest": { "type": "string", "description": "Path to the Assembly Manifest YAML file" },
+                            "svg": { "type": "boolean", "default": false, "description": "Render as SVG instead of ASCII" }
+                        },
+                        "required": ["manifest"]
+                    }
+                },
+                {
                     "name": "graphify_relay_init",
                     "description": "Initialize a relay.json at the current workspace to start cross-session / cross-repo state handoff",
                     "inputSchema": {
@@ -883,6 +918,35 @@ fn handle_request(
                 };
             }
 
+            // Assembly Manifest compose tools: read / write / render.
+            // Write validates BEFORE writing (atomic; on failure the file is
+            // byte-for-byte unchanged) so AI-authored relations can never
+            // corrupt an existing manifest.
+            if matches!(
+                tool_name,
+                "graphify_compose_read" | "graphify_compose_write" | "graphify_compose_render"
+            ) {
+                return match run_compose_tool(tool_name, &tool_arguments) {
+                    Ok(val) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": val }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Compose tool error: {e}"),
+                        }),
+                    },
+                };
+            }
+
             // Embedded handoff relay tools: rendered text contract frozen by
             // PROTOCOL.md, errors surface as tool errors (never a panic).
             if matches!(
@@ -1231,6 +1295,57 @@ fn handle_request(
                 message: format!("Method not found: {method}"),
             }),
         },
+    }
+}
+
+/// Dispatch one `compose*` tool. Shared logic lives in `graphify-core`
+/// (`compose_manifest` + `compose_merge`); render shells out to npx box-of-rain.
+fn run_compose_tool(name: &str, args: &serde_json::Value) -> Result<String> {
+    let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    let manifest_path = get_str("manifest")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("missing 'manifest' path argument"))?;
+
+    match name {
+        "graphify_compose_read" => {
+            let loaded = graphify_core::compose_manifest::load_manifest(&manifest_path)?;
+            let mut lines = vec![format!(
+                "manifest OK: workspaces {} 個, relations {} 條 ({})",
+                loaded.manifest.workspaces.len(),
+                loaded.manifest.relations.len(),
+                manifest_path.display()
+            )];
+            for (ws_id, root) in &loaded.roots {
+                lines.push(format!("  - {ws_id}: {}", root.display()));
+            }
+            for rel in &loaded.manifest.relations {
+                lines.push(format!(
+                    "  - {} --[{}]--> {}",
+                    rel.from, rel.relation, rel.to
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        "graphify_compose_write" => {
+            let content = get_str("content")
+                .ok_or_else(|| anyhow::anyhow!("missing 'content' (YAML) argument"))?;
+            graphify_core::compose_manifest::write_manifest_atomic(&manifest_path, content)?;
+            Ok(format!(
+                "manifest written and validated: {}",
+                manifest_path.display()
+            ))
+        }
+        "graphify_compose_render" => {
+            let svg = args
+                .get("svg")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let loaded = graphify_core::compose_manifest::load_manifest(&manifest_path)?;
+            let unified = graphify_core::compose_merge::build_unified_graph(&loaded)?;
+            let projection = graphify_core::compose_render::project(&unified);
+            graphify_core::compose_render::render_via_npx(&projection, svg)
+        }
+        other => Err(anyhow::anyhow!("unknown compose tool: {other}")),
     }
 }
 
@@ -1766,7 +1881,11 @@ mod tests {
         std::env::set_current_dir(&dir)?;
         let load_result = GraphState::load();
         let empty = GraphState::empty()?;
-        std::env::set_current_dir(cwd)?;
+        // set_current_dir is process-global: sibling tests also chdir; if our
+        // saved cwd was removed mid-race, fall back to the workspace root.
+        if std::env::set_current_dir(&cwd).is_err() {
+            let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
+        }
         fs::remove_dir_all(&dir)?;
 
         assert!(
@@ -1850,7 +1969,12 @@ mod tests {
                 .is_some()
         );
 
-        std::env::set_current_dir(cwd)?;
+        // set_current_dir is process-global: a sibling test that also chdirs
+        // can race us here and leave our saved cwd deleted (ENOENT). Fall
+        // back to the workspace root instead of failing the test.
+        if std::env::set_current_dir(&cwd).is_err() {
+            let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
+        }
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
@@ -1912,7 +2036,12 @@ mod tests {
         assert!(status_text.contains("test-repo"), "{status_text}");
         assert!(status_text.contains("dev"), "{status_text}");
 
-        std::env::set_current_dir(cwd)?;
+        // set_current_dir is process-global: a sibling test that also chdirs
+        // can race us here and leave our saved cwd deleted (ENOENT). Fall
+        // back to the workspace root instead of failing the test.
+        if std::env::set_current_dir(&cwd).is_err() {
+            let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
+        }
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
