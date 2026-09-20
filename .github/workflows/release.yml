@@ -15,6 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 第一方內嵌 plugin 以 ../../GraphifyPlugins path dependency 靜態連結，
+      # CI 需將其 clone 到 workspace 的同層位置（與本機開發目錄結構一致）
+      - name: Checkout GraphifyPlugins (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: cawa0505/graphify-plugins
+          ref: main
+          path: GraphifyPlugins
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
