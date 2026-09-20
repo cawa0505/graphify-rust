@@ -1017,6 +1017,11 @@ fn run_tui(graph_path: &Path) -> Result<()> {
                 return Ok(());
             }
             let ws = &ws_list[parsed - 1];
+            // 對齊行程 cwd 到 workspace root：之後的相對路徑（source_file、
+            // compose manifest 掃描、$EDITOR）都以該 root 解析
+            if let Err(e) = std::env::set_current_dir(&ws.root_path) {
+                eprintln!("[graphify] Cannot chdir to {}: {e}", ws.root_path);
+            }
             // Try graph at workspace root
             let derived = std::path::Path::new(&ws.root_path).join("graphify-out/graph.toon");
             load_graph_output(&derived).unwrap_or_else(|_| graphify_core::GraphOutput {
