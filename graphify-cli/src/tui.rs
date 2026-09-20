@@ -59,6 +59,8 @@ pub struct App {
     pub modal_state: ModalState,
     pub modal_hover: Option<usize>,
     pub last_modal_list_area: Option<Rect>,
+    /// 最後一幀的主區寬度（compose 網格重排用；draw 週期外按鍵也能取到）
+    pub last_area_width: u16,
 
     // CANVAS VIEWPORT CONTROLS
     pub canvas_coords: crate::ui::canvas::NodeCoordinates,
@@ -103,6 +105,7 @@ impl App {
             modal_state: ModalState::None,
             modal_hover: None,
             last_modal_list_area: None,
+            last_area_width: 80,
             canvas_coords,
             pan_x: 0.0,
             pan_y: 0.0,
@@ -584,6 +587,7 @@ impl App {
             diagram: Vec::new(),
             error: Vec::new(),
             scroll: 0,
+            h_scroll: 0,
         };
         self.modal_hover = Some(hovered);
         self.active_tab = ActiveTab::Architecture;
@@ -602,7 +606,8 @@ impl App {
         let Some(path) = manifests.get(idx).cloned() else {
             return;
         };
-        let (diagram, error) = match build_compose_diagram(&path) {
+        let (diagram, error) = match build_compose_diagram(&path, usize::from(self.last_area_width))
+        {
             Ok(lines) => (lines, Vec::new()),
             Err(errors) => (Vec::new(), errors),
         };
@@ -632,6 +637,17 @@ impl App {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             {
                 *scroll = next.clamp(0, i32::from(u16::MAX)) as u16;
+            }
+        }
+    }
+
+    /// Diagram 層水平捲動（h/l；網格重排後仍超寬的後備）
+    fn compose_h_scroll(&mut self, delta: i16) {
+        if let ModalState::ComposePanel { h_scroll, .. } = &mut self.modal_state {
+            let next = i32::from((*h_scroll).cast_signed()) + i32::from(delta);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                *h_scroll = next.clamp(0, i32::from(u16::MAX)) as u16;
             }
         }
     }
@@ -734,7 +750,10 @@ fn scan_compose_manifests() -> Vec<std::path::PathBuf> {
 
 /// 以 manifest 路徑建構 diagram 層內容。
 /// 錯誤收集為Vec（圖層紅字顯示），成功回傳手繪 ASCII 行陣列。
-fn build_compose_diagram(manifest_path: &std::path::Path) -> Result<Vec<String>, Vec<String>> {
+fn build_compose_diagram(
+    manifest_path: &std::path::Path,
+    term_width: usize,
+) -> Result<Vec<String>, Vec<String>> {
     let loaded = match graphify_core::compose_manifest::load_manifest(manifest_path) {
         Ok(l) => l,
         Err(e) => return Err(vec![e.to_string()]),
@@ -743,7 +762,7 @@ fn build_compose_diagram(manifest_path: &std::path::Path) -> Result<Vec<String>,
         Ok(u) => u,
         Err(e) => return Err(vec![e.to_string()]),
     };
-    Ok(render_compose_ascii(&unified))
+    Ok(render_compose_ascii(&unified, term_width))
 }
 
 /// `ws::node_id` 拆解；無 `::` 時回傳 `(原始字串, "")`。
@@ -753,9 +772,15 @@ fn split_ref(endpoint: &str) -> (String, String) {
 }
 
 /// 粗粒度手繪 ASCII：每 workspace 一個 box-drawing 容器 + 跨域 composition 邊。
+/// 終端不寬時自動折成多排網格（每排盡量多個 box，`GAP = 4` 欄間隔）。
 /// ponytail: 2–8 workspace 手繪網格足夠；fine-grained 佈局走 `compose render`（npx）。
-fn render_compose_ascii(unified: &graphify_core::compose_merge::UnifiedGraph) -> Vec<String> {
+fn render_compose_ascii(
+    unified: &graphify_core::compose_merge::UnifiedGraph,
+    term_width: usize,
+) -> Vec<String> {
     use graphify_core::compose_merge::container_ids;
+
+    const GAP: usize = 4; // box 間隔欄數
 
     let containers = container_ids(unified);
     let mut lines = Vec::new();
@@ -778,63 +803,72 @@ fn render_compose_ascii(unified: &graphify_core::compose_merge::UnifiedGraph) ->
         .unwrap_or(8)
         .max(8);
 
-    // 上緣
-    let top = containers
-        .iter()
-        .map(|_| format!("┌{}┐", "─".repeat(width)))
-        .collect::<Vec<_>>()
-        .join("    ");
-    lines.push(top);
+    // 每排幾個 box：終端寬度允許時一排全放；不夠時折成多排網格（至少 1 個/排）
+    let per_row = ((term_width + GAP) / (width + GAP)).max(1);
 
-    // 內容：workspace id 行 + 至多數行成員標籤
-    let max_rows = containers
-        .iter()
-        .map(|id| {
-            let prefix = format!("{id}::");
-            let member_rows = unified
-                .nodes
-                .iter()
-                .filter(|n| n.id.0.starts_with(&prefix))
-                .count()
-                .min(3);
-            member_rows + 1
-        })
-        .max()
-        .unwrap_or(1);
-    for row in 0..max_rows {
-        let mut cells = Vec::new();
-        for id in &containers {
-            let prefix = format!("{id}::");
-            let members: Vec<String> = unified
-                .nodes
-                .iter()
-                .filter(|n| n.id.0.starts_with(&prefix))
-                .take(3)
-                .map(|n| n.label.clone())
-                .collect();
-            let cell = if row == 0 {
-                id.clone()
-            } else {
-                members.get(row - 1).cloned().unwrap_or_default()
-            };
-            let truncated: String = if cell.chars().count() > width - 2 {
-                let t: String = cell.chars().take(width - 5).collect();
-                format!("{t}...")
-            } else {
-                cell
-            };
-            cells.push(format!("│{truncated:<width$}│"));
+    // 逐排產生（上緣/內容/下緣），排與排之間空一行
+    for chunk in containers.chunks(per_row) {
+        if !lines.is_empty() {
+            lines.push(String::new());
         }
-        lines.push(cells.join("    "));
+        // 上緣
+        lines.push(
+            chunk
+                .iter()
+                .map(|_| format!("┌{}┐", "─".repeat(width)))
+                .collect::<Vec<_>>()
+                .join(&" ".repeat(GAP)),
+        );
+        // 內容：workspace id 行 + 至多數行成員標籤
+        let max_rows = chunk
+            .iter()
+            .map(|id| {
+                let prefix = format!("{id}::");
+                let member_rows = unified
+                    .nodes
+                    .iter()
+                    .filter(|n| n.id.0.starts_with(&prefix))
+                    .count()
+                    .min(3);
+                member_rows + 1
+            })
+            .max()
+            .unwrap_or(1);
+        for row in 0..max_rows {
+            let mut cells = Vec::new();
+            for id in chunk {
+                let prefix = format!("{id}::");
+                let members: Vec<String> = unified
+                    .nodes
+                    .iter()
+                    .filter(|n| n.id.0.starts_with(&prefix))
+                    .take(3)
+                    .map(|n| n.label.clone())
+                    .collect();
+                let cell = if row == 0 {
+                    id.clone()
+                } else {
+                    members.get(row - 1).cloned().unwrap_or_default()
+                };
+                let truncated: String = if cell.chars().count() > width - 2 {
+                    let t: String = cell.chars().take(width - 5).collect();
+                    format!("{t}...")
+                } else {
+                    cell
+                };
+                cells.push(format!("│{truncated:<width$}│"));
+            }
+            lines.push(cells.join(&" ".repeat(GAP)));
+        }
+        // 下緣
+        lines.push(
+            chunk
+                .iter()
+                .map(|_| format!("└{}┘", "─".repeat(width)))
+                .collect::<Vec<_>>()
+                .join(&" ".repeat(GAP)),
+        );
     }
-
-    // 下緣
-    let bottom = containers
-        .iter()
-        .map(|_| format!("└{}┘", "─".repeat(width)))
-        .collect::<Vec<_>>()
-        .join("    ");
-    lines.push(bottom);
 
     // 跨域 composition 邊：`ws_a ── relation ──▶ ws_b`
     let ws_set: std::collections::HashSet<&str> = containers.iter().map(String::as_str).collect();
@@ -947,6 +981,31 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                 }
                 app.close_modal();
                 app.log("Modal closed", theme::SUBTLE);
+            }
+            // Architecture tab 內嵌 compose 狀態時，tab 切換鍵必須放行
+            // （否則 modal guard 吞掉 1/2/Tab，卡死在 Architecture）
+            KeyCode::Char('1') if app.active_tab == ActiveTab::Architecture => {
+                app.close_compose_state();
+                app.active_tab = ActiveTab::Explorer;
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: '1' → Explorer", theme::CYAN);
+            }
+            KeyCode::Char('2') if app.active_tab == ActiveTab::Architecture => {
+                app.close_compose_state();
+                app.active_tab = ActiveTab::VisualGraph;
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: '2' → Visual Graph", theme::CYAN);
+            }
+            KeyCode::Tab if app.active_tab == ActiveTab::Architecture => {
+                app.close_compose_state();
+                app.active_tab = ActiveTab::Explorer;
+                app.flash.trigger(ActionTag::Nav);
+                app.log("Keyboard: [Tab] switch view", theme::CYAN);
+            }
+            KeyCode::Char('q') if app.active_tab == ActiveTab::Architecture => {
+                app.flash.trigger(ActionTag::Quit);
+                app.log("Keyboard: 'q' Quit", theme::RED);
+                return Ok(true);
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if matches!(app.modal_state, ModalState::PluginPanel { .. }) {
@@ -1092,14 +1151,34 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if app.active_tab == ActiveTab::VisualGraph {
+            if matches!(
+                app.modal_state,
+                ModalState::ComposePanel {
+                    selected: Some(_),
+                    ..
+                }
+            ) && app.active_tab == ActiveTab::Architecture
+            {
+                app.compose_h_scroll(-2);
+                app.flash.trigger(ActionTag::Pan);
+            } else if app.active_tab == ActiveTab::VisualGraph {
                 app.pan_x -= 4.0 * app.zoom;
                 app.flash.trigger(ActionTag::Pan);
                 app.log_throttled("Keyboard: Pan left", theme::GREEN);
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
-            if app.active_tab == ActiveTab::VisualGraph {
+            if matches!(
+                app.modal_state,
+                ModalState::ComposePanel {
+                    selected: Some(_),
+                    ..
+                }
+            ) && app.active_tab == ActiveTab::Architecture
+            {
+                app.compose_h_scroll(2);
+                app.flash.trigger(ActionTag::Pan);
+            } else if app.active_tab == ActiveTab::VisualGraph {
                 app.pan_x += 4.0 * app.zoom;
                 app.flash.trigger(ActionTag::Pan);
                 app.log_throttled("Keyboard: Pan right", theme::GREEN);
@@ -1208,7 +1287,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     ..
                 }
             ) {
-                app.compose_scroll(3);
+                app.compose_scroll(-3);
                 app.flash.trigger(ActionTag::Zoom);
             } else if app.active_tab == ActiveTab::VisualGraph {
                 app.zoom = (app.zoom - 0.05).max(0.1); // ponytail: 滾輪向上放大（投射邊界縮小 = Zoom In）
@@ -1414,6 +1493,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 #[allow(clippy::too_many_lines)]
 fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     let chrome = layout::split(f.area(), app.show_event_log);
+    app.last_area_width = chrome.main.width;
 
     // 1. Tab 列導航
     let active_idx = match app.active_tab {
@@ -1456,13 +1536,20 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
                 diagram,
                 error,
                 scroll,
+                h_scroll,
             } = &app.modal_state
             {
                 let list_area = match selected {
                     None => modal::draw_compose_menu(f, manifests, *hovered, chrome.main),
-                    Some(path) => {
-                        modal::draw_compose_diagram(f, path, diagram, error, *scroll, chrome.main)
-                    }
+                    Some(path) => modal::draw_compose_diagram(
+                        f,
+                        path,
+                        diagram,
+                        error,
+                        *scroll,
+                        *h_scroll,
+                        chrome.main,
+                    ),
                 };
                 app.last_modal_list_area = Some(list_area);
             }
@@ -1773,7 +1860,7 @@ mod compose_tests {
             cross_edges: 1,
         };
 
-        let lines = render_compose_ascii(&unified);
+        let lines = render_compose_ascii(&unified, 200);
         // 容器行：兩個 workspace box（id 顯示於內容第一行，非邊框）
         let Some(id_row) = lines.get(1) else {
             panic!("expected id row after top border");

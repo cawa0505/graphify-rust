@@ -49,6 +49,7 @@ pub enum ModalState {
         diagram: Vec<String>,
         error: Vec<String>,
         scroll: u16,
+        h_scroll: u16,
     },
 }
 
@@ -149,11 +150,14 @@ pub fn draw_modal(
             diagram,
             error,
             scroll,
+            h_scroll,
         } => match selected {
             // Compose 已改為 Architecture tab 內嵌繪製（draw_ui 分派），
             // 浮動 modal 路徑僅防禦保留（不應被觸發）
             None => Some(draw_compose_menu(f, manifests, *h, area)),
-            Some(path) => Some(draw_compose_diagram(f, path, diagram, error, *scroll, area)),
+            Some(path) => Some(draw_compose_diagram(
+                f, path, diagram, error, *scroll, *h_scroll, area,
+            )),
         },
     }
 }
@@ -363,11 +367,7 @@ pub fn draw_compose_menu(
 ) -> Rect {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(
-            Style::default()
-                .fg(theme::MAUVE)
-                .add_modifier(Modifier::BOLD),
-        )
+        .border_style(Style::default().fg(theme::SURFACE_HI))
         .title(Line::from(Span::styled(
             " 🧩 Compose Manifests ",
             Style::default()
@@ -446,16 +446,13 @@ pub fn draw_compose_diagram(
     diagram: &[String],
     error: &[String],
     scroll: u16,
+    h_scroll: u16,
     area: Rect,
 ) -> Rect {
     let title = format!(" 🧩 Compose — {} ", manifest_path.display());
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(
-            Style::default()
-                .fg(theme::MAUVE)
-                .add_modifier(Modifier::BOLD),
-        )
+        .border_style(Style::default().fg(theme::SURFACE_HI))
         .title(Line::from(Span::styled(
             title,
             Style::default()
@@ -476,24 +473,19 @@ pub fn draw_compose_diagram(
 
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " [Esc] Back to menu · [j/k] Scroll ",
+            " [Esc] Back to menu · [j/k] Scroll · [h/l] Horizontal ",
             Style::default().fg(theme::SUBTLE),
         ))),
         rows[0],
     );
 
     if error.is_empty() {
-        // 手繪 ASCII 關聯圖（可捲動）
+        // 手繪 ASCII 關聯圖（垂直捲動 + 水平捲動；不 wrap——wrap 會折斷 box-drawing 邊框）
         let lines: Vec<Line> = diagram
             .iter()
             .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(theme::TEXT))))
             .collect();
-        f.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            rows[1],
-        );
+        f.render_widget(Paragraph::new(lines).scroll((scroll, h_scroll)), rows[1]);
     } else {
         // 驗證錯誤：紅字逐行，不靜默空白
         let lines: Vec<Line> = std::iter::once(Line::from(Span::styled(
