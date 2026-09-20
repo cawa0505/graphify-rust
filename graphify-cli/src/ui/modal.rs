@@ -150,6 +150,8 @@ pub fn draw_modal(
             error,
             scroll,
         } => match selected {
+            // Compose 已改為 Architecture tab 內嵌繪製（draw_ui 分派），
+            // 浮動 modal 路徑僅防禦保留（不應被觸發）
             None => Some(draw_compose_menu(f, manifests, *h, area)),
             Some(path) => Some(draw_compose_diagram(f, path, diagram, error, *scroll, area)),
         },
@@ -353,15 +355,12 @@ fn draw_workspace_selector(
 }
 
 /// Compose 面板 menu 層：列出 manifest 檔（相對路徑），hover + Enter 選取。
-fn draw_compose_menu(
+pub fn draw_compose_menu(
     f: &mut ratatui::Frame,
     manifests: &[PathBuf],
     hovered: usize,
     area: Rect,
 ) -> Rect {
-    let popup = centered_rect(64, 55, area);
-    f.render_widget(Clear, popup);
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(
@@ -375,8 +374,8 @@ fn draw_compose_menu(
                 .fg(theme::MAUVE)
                 .add_modifier(Modifier::BOLD),
         )));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -441,7 +440,7 @@ fn draw_compose_menu(
 }
 
 /// Compose 面板 diagram 層：手繪 ASCII 關聯圖（或紅字錯誤），可捲動。
-fn draw_compose_diagram(
+pub fn draw_compose_diagram(
     f: &mut ratatui::Frame,
     manifest_path: &std::path::Path,
     diagram: &[String],
@@ -449,9 +448,6 @@ fn draw_compose_diagram(
     scroll: u16,
     area: Rect,
 ) -> Rect {
-    let popup = centered_rect(84, 80, area);
-    f.render_widget(Clear, popup);
-
     let title = format!(" 🧩 Compose — {} ", manifest_path.display());
     let block = Block::default()
         .borders(Borders::ALL)
@@ -466,8 +462,8 @@ fn draw_compose_diagram(
                 .fg(theme::MAUVE)
                 .add_modifier(Modifier::BOLD),
         )));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)

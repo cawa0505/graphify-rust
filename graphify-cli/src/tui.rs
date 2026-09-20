@@ -41,7 +41,11 @@ use std::{
 };
 
 /// Tab 標題：繪製與點擊命中測試共用同一來源，避免偏移漂移
-const TAB_TITLES: [&str; 2] = [" 🔍 Explorer (1) ", " 📊 Visual Graph (2) "];
+const TAB_TITLES: [&str; 3] = [
+    " 🔍 Explorer (1) ",
+    " 📊 Visual Graph (2) ",
+    " 🧩 Architecture (3) ",
+];
 
 pub struct App {
     pub graph: GraphOutput,
@@ -251,6 +255,13 @@ impl App {
         self.modal_state = ModalState::None;
         self.modal_hover = None;
         self.last_modal_list_area = None;
+    }
+
+    /// 重置 Compose 面板狀態（離開 Architecture tab 時用，避免 modal guard 殘留）
+    fn close_compose_state(&mut self) {
+        if matches!(self.modal_state, ModalState::ComposePanel { .. }) {
+            self.close_modal();
+        }
     }
 
     /// Navigate plugin panel modal down
@@ -562,7 +573,8 @@ impl App {
     }
 
     /// 開啟 Compose 面板（menu 層）：掃描 workspace 根目錄與 manifests/ 的 *.yaml
-    fn open_compose_panel(&mut self) {
+    /// 開啟 Architecture tab（menu 層）：掃描 manifest、切分頁、重置選取
+    fn open_compose_tab(&mut self) {
         let manifests = scan_compose_manifests();
         let hovered = 0;
         self.modal_state = ModalState::ComposePanel {
@@ -574,8 +586,9 @@ impl App {
             scroll: 0,
         };
         self.modal_hover = Some(hovered);
+        self.active_tab = ActiveTab::Architecture;
         self.flash.trigger(ActionTag::Nav);
-        self.log("Keyboard: 'y' → Compose panel", theme::MAUVE);
+        self.log("Keyboard: '3' → Architecture tab", theme::MAUVE);
     }
 
     /// 選取 manifest 並生成 diagram 層內容（同步一次性計算，不 shell-out）
@@ -1014,27 +1027,37 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
         KeyCode::Tab => {
             app.active_tab = match app.active_tab {
                 ActiveTab::Explorer => ActiveTab::VisualGraph,
-                ActiveTab::VisualGraph => ActiveTab::Explorer,
+                ActiveTab::VisualGraph => ActiveTab::Architecture,
+                ActiveTab::Architecture => ActiveTab::Explorer,
             };
+            // 離開 Architecture 時重置 compose 狀態，避免 modal guard 殘留
+            if app.active_tab != ActiveTab::Architecture {
+                app.close_compose_state();
+            }
             app.flash.trigger(ActionTag::Nav);
             app.log("Keyboard: [Tab] switch view", theme::CYAN);
         }
         KeyCode::Char('1') => {
+            app.close_compose_state();
             app.active_tab = ActiveTab::Explorer;
             app.flash.trigger(ActionTag::Nav);
             app.log("Keyboard: '1' → Explorer", theme::CYAN);
         }
         KeyCode::Char('2') => {
+            app.close_compose_state();
             app.active_tab = ActiveTab::VisualGraph;
             app.flash.trigger(ActionTag::Nav);
             app.log("Keyboard: '2' → Visual Graph", theme::CYAN);
+        }
+        KeyCode::Char('3') => {
+            app.open_compose_tab();
         }
         // 開啟 Plugin 面板 (任一 tab 皆可)
         KeyCode::Char('p') | KeyCode::Char('P') => app.open_plugin_panel(),
         // 開啟 Workspace 選擇器 (任一 tab 皆可)
         KeyCode::Char('w') | KeyCode::Char('W') => app.open_workspace_selector(),
         // 開啟 Compose 面板 (任一 tab 皆可)
-        KeyCode::Char('y') | KeyCode::Char('Y') => app.open_compose_panel(),
+        KeyCode::Char('y') | KeyCode::Char('Y') => app.open_compose_tab(),
         // 觸發 BFS 追蹤鏈 Modal
         KeyCode::Char('t') | KeyCode::Char('T') => app.open_bfs_modal(),
         KeyCode::Char('j') | KeyCode::Down => {
@@ -1248,7 +1271,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                         let tab_name = match tab {
                             ActiveTab::Explorer => "Explorer",
                             ActiveTab::VisualGraph => "VisualGraph",
+                            ActiveTab::Architecture => "Architecture",
                         };
+                        app.close_compose_state();
                         app.active_tab = tab;
                         app.log(
                             format!("Mouse Click: x={click_col}, y={click_row} [Tab: {tab_name}]"),
@@ -1387,6 +1412,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     let active_idx = match app.active_tab {
         ActiveTab::Explorer => 0,
         ActiveTab::VisualGraph => 1,
+        ActiveTab::Architecture => 2,
     };
     let tabs = Tabs::new(TAB_TITLES)
         .block(
@@ -1414,6 +1440,26 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     match app.active_tab {
         ActiveTab::Explorer => draw_explorer(f, app, chrome.main),
         ActiveTab::VisualGraph => draw_visual_graph(f, app, chrome.main),
+        ActiveTab::Architecture => {
+            // Architecture tab 內嵌 compose menu/diagram（非浮動 modal）
+            if let ModalState::ComposePanel {
+                manifests,
+                hovered,
+                selected,
+                diagram,
+                error,
+                scroll,
+            } = &app.modal_state
+            {
+                let list_area = match selected {
+                    None => modal::draw_compose_menu(f, manifests, *hovered, chrome.main),
+                    Some(path) => {
+                        modal::draw_compose_diagram(f, path, diagram, error, *scroll, chrome.main)
+                    }
+                };
+                app.last_modal_list_area = Some(list_area);
+            }
+        }
     }
 
     // 3. 事件日誌面板 (30%) — 'e' 隱藏時主視圖佔滿 100%

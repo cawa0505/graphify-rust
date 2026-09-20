@@ -156,6 +156,14 @@ pub fn render_footer(f: &mut ratatui::Frame, tab: ActiveTab, flash: &Flash, area
             pill("e", "Event Log", theme::MAUVE, ActionTag::Log),
             pill("q", "Quit", theme::RED, ActionTag::Quit),
         ][..],
+        ActiveTab::Architecture => &[
+            pill("j/k", "Nav", theme::CYAN, ActionTag::Nav),
+            pill("Enter", "Open", theme::GREEN, ActionTag::Select),
+            pill("Esc", "Back", theme::GOLD, ActionTag::Nav),
+            pill("y", "Rescan", theme::MAUVE, ActionTag::Nav),
+            pill("e", "Event Log", theme::MAUVE, ActionTag::Log),
+            pill("q", "Quit", theme::RED, ActionTag::Quit),
+        ][..],
     };
 
     let mut spans: Vec<Span> = Vec::new();
