@@ -6,9 +6,9 @@
 OpenDocuments Rust-refactor branch transition: Migrating from old Node.js/TypeScript Docker containers to 100% self-hosted, lightweight Rust binary running natively under Linux systemd user space (Port 3006). All parsers, storage engine (WAL SQLite + LanceDB 0.10), TUI, and SSE MCP endpoints have been built and compiled into a single optimized native binary (~12MB).
 
 ## Status
-- **Phase:** qdrant-delete-chunk-fix
+- **Phase:** done
 - **Role:** backend
-- **Confidence:** 5/5
+- **Confidence:** 4/5
 - **Last commit:** `(not a git repo)`
 - **Uncommitted:** n/a
 
@@ -16,18 +16,17 @@ OpenDocuments Rust-refactor branch transition: Migrating from old Node.js/TypeSc
 Fixed Qdrant delete timeout on 199K collections: replaced OR-filter source_file scan with deterministic point-ID hash deletion (O(changed_nodes) vs O(collection_size)). Delete time: 210ms for 93K nodes. Commit 810ce16 pushed. Timing eprintln removed from memory.rs.
 
 ## Open debts
-- statemachine-rename
-- v2.2.0-planning
+- docs/cli.md missing subcommands
 
 ## Spec intent
 (no spec yet)
 
 ## Next session starter
-v2.2.0 planning
+Update README/docs about skill install commands
 
 ## Inherited handoffs
 (none)
 
 ---
-_Generated 2026-08-26T03:43:03.314Z · relay v1.0.0_
+_Generated 2026-08-28T05:40:11.122Z · relay v1.0.0_
 

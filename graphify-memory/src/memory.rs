@@ -1183,10 +1183,10 @@ fn json_to_condition(val: &Value) -> Option<qdrant_client::qdrant::Condition> {
     Some(condition)
 }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::future::Future;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
