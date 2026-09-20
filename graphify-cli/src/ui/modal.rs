@@ -4,8 +4,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::path::PathBuf;
 
 /// Modal 列表單一項目
 #[derive(Debug, Clone)]
@@ -38,6 +39,17 @@ pub enum ModalState {
         workspaces: Vec<WorkspaceRow>,
         hovered: usize,
     },
+    /// Compose 面板：menu 層（manifest 列表）與 diagram 層（ASCII 關聯圖）。
+    /// `selected` 為 diagram 層當前顯示的 manifest 檔名；`diagram` 為手繪
+    /// ASCII 行陣列；`error` 為驗證/合併錯誤（紅字逐行顯示）。
+    ComposePanel {
+        manifests: Vec<PathBuf>,
+        hovered: usize,
+        selected: Option<PathBuf>,
+        diagram: Vec<String>,
+        error: Vec<String>,
+        scroll: u16,
+    },
 }
 
 impl ModalState {
@@ -49,14 +61,20 @@ impl ModalState {
             Self::Relations(_) => " 📡 Relations Inspector ",
             Self::PluginPanel { .. } => " 🔌 Plugin Health Monitor ",
             Self::WorkspaceSelector { .. } => " 📂 Switch Workspace ",
+            // menu/diagram 兩層共用 Compose 標題（diagram 層另於邊框顯示 manifest 路徑）
+            Self::ComposePanel { .. } => " 🧩 Compose ",
         }
     }
 
     #[must_use]
     pub fn items(&self) -> &[ModalItem] {
         match self {
-            Self::None | Self::PluginPanel { .. } | Self::WorkspaceSelector { .. } => &[],
             Self::BfsTrace(items) | Self::Relations(items) => items,
+            // ComposePanel 用 diagram/error 專屬渲染，不走 ModalItem 列表
+            Self::None
+            | Self::PluginPanel { .. }
+            | Self::WorkspaceSelector { .. }
+            | Self::ComposePanel { .. } => &[],
         }
     }
 
@@ -67,6 +85,7 @@ impl ModalState {
             Self::BfsTrace(items) | Self::Relations(items) => items.len(),
             Self::PluginPanel { plugins, .. } => plugins.len(),
             Self::WorkspaceSelector { workspaces, .. } => workspaces.len(),
+            Self::ComposePanel { manifests, .. } => manifests.len(),
         }
     }
 
@@ -123,6 +142,17 @@ pub fn draw_modal(
             workspaces,
             hovered: h,
         } => Some(draw_workspace_selector(f, workspaces, *h, area)),
+        ModalState::ComposePanel {
+            manifests,
+            hovered: h,
+            selected,
+            diagram,
+            error,
+            scroll,
+        } => match selected {
+            None => Some(draw_compose_menu(f, manifests, *h, area)),
+            Some(path) => Some(draw_compose_diagram(f, path, diagram, error, *scroll, area)),
+        },
     }
 }
 
@@ -314,6 +344,184 @@ fn draw_workspace_selector(
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(" {} workspaces ", workspaces.len()),
+            Style::default().fg(theme::SUBTLE),
+        ))),
+        rows[2],
+    );
+
+    rows[1]
+}
+
+/// Compose 面板 menu 層：列出 manifest 檔（相對路徑），hover + Enter 選取。
+fn draw_compose_menu(
+    f: &mut ratatui::Frame,
+    manifests: &[PathBuf],
+    hovered: usize,
+    area: Rect,
+) -> Rect {
+    let popup = centered_rect(64, 55, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(theme::MAUVE)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title(Line::from(Span::styled(
+            " 🧩 Compose Manifests ",
+            Style::default()
+                .fg(theme::MAUVE)
+                .add_modifier(Modifier::BOLD),
+        )));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " [Esc/c] Close · [j/k] Navigate · [Enter] Render diagram ",
+            Style::default().fg(theme::SUBTLE),
+        ))),
+        rows[0],
+    );
+
+    let list_items: Vec<ListItem> = if manifests.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "找不到 Assembly Manifest（*.yaml）— 於 workspace 根目錄或 manifests/ 放置",
+            Style::default().fg(theme::SUBTLE),
+        )))]
+    } else {
+        manifests
+            .iter()
+            .enumerate()
+            .map(|(i, path)| {
+                let arrow = if i == hovered { "▶ " } else { "  " };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        arrow,
+                        Style::default()
+                            .fg(theme::CYAN)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(path.display().to_string(), Style::default().fg(theme::TEXT)),
+                ]))
+            })
+            .collect()
+    };
+    let list = List::new(list_items)
+        .highlight_style(
+            Style::default()
+                .bg(theme::SURFACE_HI)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(hovered));
+    f.render_stateful_widget(list, rows[1], &mut list_state);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} manifests ", manifests.len()),
+            Style::default().fg(theme::SUBTLE),
+        ))),
+        rows[2],
+    );
+
+    rows[1]
+}
+
+/// Compose 面板 diagram 層：手繪 ASCII 關聯圖（或紅字錯誤），可捲動。
+fn draw_compose_diagram(
+    f: &mut ratatui::Frame,
+    manifest_path: &std::path::Path,
+    diagram: &[String],
+    error: &[String],
+    scroll: u16,
+    area: Rect,
+) -> Rect {
+    let popup = centered_rect(84, 80, area);
+    f.render_widget(Clear, popup);
+
+    let title = format!(" 🧩 Compose — {} ", manifest_path.display());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(theme::MAUVE)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::MAUVE)
+                .add_modifier(Modifier::BOLD),
+        )));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " [Esc] Back to menu · [j/k] Scroll ",
+            Style::default().fg(theme::SUBTLE),
+        ))),
+        rows[0],
+    );
+
+    if error.is_empty() {
+        // 手繪 ASCII 關聯圖（可捲動）
+        let lines: Vec<Line> = diagram
+            .iter()
+            .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(theme::TEXT))))
+            .collect();
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0)),
+            rows[1],
+        );
+    } else {
+        // 驗證錯誤：紅字逐行，不靜默空白
+        let lines: Vec<Line> = std::iter::once(Line::from(Span::styled(
+            "✗ Manifest 驗證失敗：",
+            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+        )))
+        .chain(error.iter().map(|e| {
+            Line::from(Span::styled(
+                format!("  • {e}"),
+                Style::default().fg(theme::RED),
+            ))
+        }))
+        .collect();
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[1]);
+    }
+
+    let status = if error.is_empty() {
+        format!(" {} lines ", diagram.len())
+    } else {
+        format!(" {} errors ", error.len())
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            status,
             Style::default().fg(theme::SUBTLE),
         ))),
         rows[2],

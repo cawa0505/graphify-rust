@@ -61,6 +61,7 @@ graphify tui
 - `/`: Focus search bar.
 - `g`: Launch default editor and jump to precise code line number.
 - `t`/`T`: Trigger Breadth-First Search (BFS) trace path modal overlay.
+- `y`: Open the Compose panel (Assembly Manifest viewer): lists `*.yaml` manifests in the workspace root and `manifests/`, `Enter` renders a coarse-grained cross-workspace ASCII relation diagram, `j`/`k` or mouse wheel scrolls, `Esc` steps back (diagram → menu → inspector).
 - `h`/`j`/`k`/`l` / Arrow Keys: Pan canvas viewport in Visual Graph.
 - `+`/`-`: Zoom in/out on the canvas.
 - `r`/`R`: Reset canvas camera (pan and zoom).

@@ -561,6 +561,89 @@ impl App {
         self.log("Keyboard: 'w' → Workspace selector", theme::MAUVE);
     }
 
+    /// 開啟 Compose 面板（menu 層）：掃描 workspace 根目錄與 manifests/ 的 *.yaml
+    fn open_compose_panel(&mut self) {
+        let manifests = scan_compose_manifests();
+        let hovered = 0;
+        self.modal_state = ModalState::ComposePanel {
+            manifests,
+            hovered,
+            selected: None,
+            diagram: Vec::new(),
+            error: Vec::new(),
+            scroll: 0,
+        };
+        self.modal_hover = Some(hovered);
+        self.flash.trigger(ActionTag::Nav);
+        self.log("Keyboard: 'y' → Compose panel", theme::MAUVE);
+    }
+
+    /// 選取 manifest 並生成 diagram 層內容（同步一次性計算，不 shell-out）
+    fn select_compose_manifest(&mut self, idx: usize) {
+        let (manifests, hovered) = match &self.modal_state {
+            ModalState::ComposePanel {
+                manifests, hovered, ..
+            } => (manifests.clone(), *hovered),
+            _ => return,
+        };
+        let Some(path) = manifests.get(idx).cloned() else {
+            return;
+        };
+        let (diagram, error) = match build_compose_diagram(&path) {
+            Ok(lines) => (lines, Vec::new()),
+            Err(errors) => (Vec::new(), errors),
+        };
+        if let ModalState::ComposePanel {
+            selected,
+            diagram: d,
+            error: e,
+            scroll,
+            ..
+        } = &mut self.modal_state
+        {
+            *selected = Some(path);
+            *d = diagram;
+            *e = error;
+            *scroll = 0;
+        }
+        let _ = hovered;
+        self.modal_hover = None;
+        self.flash.trigger(ActionTag::Nav);
+    }
+
+    /// Diagram 層捲動（j/k / 滾輪）
+    fn compose_scroll(&mut self, delta: i16) {
+        if let ModalState::ComposePanel { scroll, .. } = &mut self.modal_state {
+            let next = i32::from((*scroll).cast_signed()) + i32::from(delta);
+            // clamp 後值域保證 0..=u16::MAX，轉換不會截斷/丟號
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                *scroll = next.clamp(0, i32::from(u16::MAX)) as u16;
+            }
+        }
+    }
+
+    /// Diagram 層 Esc → 回 menu 層
+    fn compose_back_to_menu(&mut self) {
+        if let ModalState::ComposePanel {
+            selected,
+            diagram,
+            error,
+            scroll,
+            hovered,
+            ..
+        } = &mut self.modal_state
+        {
+            *selected = None;
+            *diagram = Vec::new();
+            *error = Vec::new();
+            *scroll = 0;
+            *hovered = 0;
+        }
+        self.modal_hover = Some(0);
+        self.flash.trigger(ActionTag::Nav);
+    }
+
     /// Switch to a workspace by index, reload graph
     fn switch_to_workspace(&mut self, idx: usize) {
         let workspaces = match &self.modal_state {
@@ -601,6 +684,156 @@ impl App {
             theme::GREEN,
         );
     }
+}
+
+/// 掃描 Compose 面板可用的 manifest 檔：workspace 根目錄與 manifests/ 下的 *.yaml。
+/// 同步一次性掃描（不排序子目錄遞迴），根目錄優先、去重。
+fn scan_compose_manifests() -> Vec<std::path::PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut found: Vec<std::path::PathBuf> = Vec::new();
+    for dir in [cwd.clone(), cwd.join("manifests")] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                && !found.contains(&path)
+            {
+                found.push(path);
+            }
+        }
+    }
+    // 顯示為相對路徑（menu 可讀性）
+    found.sort();
+    found
+}
+
+/// 以 manifest 路徑建構 diagram 層內容。
+/// 錯誤收集為Vec（圖層紅字顯示），成功回傳手繪 ASCII 行陣列。
+fn build_compose_diagram(manifest_path: &std::path::Path) -> Result<Vec<String>, Vec<String>> {
+    let loaded = match graphify_core::compose_manifest::load_manifest(manifest_path) {
+        Ok(l) => l,
+        Err(e) => return Err(vec![e.to_string()]),
+    };
+    let unified = match graphify_core::compose_merge::build_unified_graph(&loaded) {
+        Ok(u) => u,
+        Err(e) => return Err(vec![e.to_string()]),
+    };
+    Ok(render_compose_ascii(&unified))
+}
+
+/// `ws::node_id` 拆解；無 `::` 時回傳 `(原始字串, "")`。
+fn split_ref(endpoint: &str) -> (String, String) {
+    graphify_core::manifest::split_node_reference(endpoint)
+        .unwrap_or_else(|| (endpoint.to_string(), String::new()))
+}
+
+/// 粗粒度手繪 ASCII：每 workspace 一個 box-drawing 容器 + 跨域 composition 邊。
+/// ponytail: 2–8 workspace 手繪網格足夠；fine-grained 佈局走 `compose render`（npx）。
+fn render_compose_ascii(unified: &graphify_core::compose_merge::UnifiedGraph) -> Vec<String> {
+    use graphify_core::compose_merge::container_ids;
+
+    let containers = container_ids(unified);
+    let mut lines = Vec::new();
+
+    // 盒子寬度 = max(ws_id, 成員標籤) 長度 + padding
+    let width = containers
+        .iter()
+        .map(|id| {
+            let prefix = format!("{id}::");
+            let member_max = unified
+                .nodes
+                .iter()
+                .filter(|n| n.id.0.starts_with(&prefix))
+                .map(|n| n.label.chars().count())
+                .max()
+                .unwrap_or(0);
+            id.chars().count().max(member_max) + 2
+        })
+        .max()
+        .unwrap_or(8)
+        .max(8);
+
+    // 上緣
+    let top = containers
+        .iter()
+        .map(|_| format!("┌{}┐", "─".repeat(width)))
+        .collect::<Vec<_>>()
+        .join("    ");
+    lines.push(top);
+
+    // 內容：workspace id 行 + 至多數行成員標籤
+    let max_rows = containers
+        .iter()
+        .map(|id| {
+            let prefix = format!("{id}::");
+            let member_rows = unified
+                .nodes
+                .iter()
+                .filter(|n| n.id.0.starts_with(&prefix))
+                .count()
+                .min(3);
+            member_rows + 1
+        })
+        .max()
+        .unwrap_or(1);
+    for row in 0..max_rows {
+        let mut cells = Vec::new();
+        for id in &containers {
+            let prefix = format!("{id}::");
+            let members: Vec<String> = unified
+                .nodes
+                .iter()
+                .filter(|n| n.id.0.starts_with(&prefix))
+                .take(3)
+                .map(|n| n.label.clone())
+                .collect();
+            let cell = if row == 0 {
+                id.clone()
+            } else {
+                members.get(row - 1).cloned().unwrap_or_default()
+            };
+            let truncated: String = if cell.chars().count() > width - 2 {
+                let t: String = cell.chars().take(width - 5).collect();
+                format!("{t}...")
+            } else {
+                cell
+            };
+            cells.push(format!("│{truncated:<width$}│"));
+        }
+        lines.push(cells.join("    "));
+    }
+
+    // 下緣
+    let bottom = containers
+        .iter()
+        .map(|_| format!("└{}┘", "─".repeat(width)))
+        .collect::<Vec<_>>()
+        .join("    ");
+    lines.push(bottom);
+
+    // 跨域 composition 邊：`ws_a ── relation ──▶ ws_b`
+    let ws_set: std::collections::HashSet<&str> = containers.iter().map(String::as_str).collect();
+    let cross: Vec<String> = unified
+        .edges
+        .iter()
+        .filter_map(|e| {
+            let (from, _) = split_ref(&e.source.0);
+            let (to, _) = split_ref(&e.target.0);
+            if from == to || !ws_set.contains(from.as_str()) || !ws_set.contains(to.as_str()) {
+                return None;
+            }
+            Some(format!("{from} ── {} ──▶ {to}", e.relation))
+        })
+        .collect();
+    if !cross.is_empty() {
+        lines.push(String::new());
+        lines.push("Composition edges:".to_string());
+        lines.extend(cross);
+    }
+    lines
 }
 
 pub fn run_tui(graph: GraphOutput) -> Result<()> {
@@ -671,6 +904,14 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
     if !matches!(app.modal_state, ModalState::None) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('c') => {
+                // Compose diagram 層：Esc 逐層返回（diagram → menu → inspector）
+                if let ModalState::ComposePanel { selected, .. } = &app.modal_state {
+                    if selected.is_some() {
+                        app.compose_back_to_menu();
+                        app.log("Compose → menu", theme::SUBTLE);
+                        return Ok(false);
+                    }
+                }
                 app.close_modal();
                 app.log("Modal closed", theme::SUBTLE);
             }
@@ -679,6 +920,14 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                     app.modal_plugin_next();
                 } else if matches!(app.modal_state, ModalState::WorkspaceSelector { .. }) {
                     app.modal_workspace_next();
+                } else if matches!(
+                    app.modal_state,
+                    ModalState::ComposePanel {
+                        selected: Some(_),
+                        ..
+                    }
+                ) {
+                    app.compose_scroll(1);
                 } else {
                     app.modal_next();
                 }
@@ -688,6 +937,14 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                     app.modal_plugin_prev();
                 } else if matches!(app.modal_state, ModalState::WorkspaceSelector { .. }) {
                     app.modal_workspace_prev();
+                } else if matches!(
+                    app.modal_state,
+                    ModalState::ComposePanel {
+                        selected: Some(_),
+                        ..
+                    }
+                ) {
+                    app.compose_scroll(-1);
                 } else {
                     app.modal_prev();
                 }
@@ -700,6 +957,14 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
             KeyCode::Char('g') | KeyCode::Enter => {
                 if let ModalState::WorkspaceSelector { hovered, .. } = &app.modal_state {
                     app.switch_to_workspace(*hovered);
+                } else if let ModalState::ComposePanel {
+                    hovered, selected, ..
+                } = &app.modal_state
+                {
+                    if selected.is_none() {
+                        let idx = *hovered;
+                        app.select_compose_manifest(idx);
+                    }
                 }
             }
             _ => {}
@@ -755,6 +1020,8 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
         KeyCode::Char('p') | KeyCode::Char('P') => app.open_plugin_panel(),
         // 開啟 Workspace 選擇器 (任一 tab 皆可)
         KeyCode::Char('w') | KeyCode::Char('W') => app.open_workspace_selector(),
+        // 開啟 Compose 面板 (任一 tab 皆可)
+        KeyCode::Char('y') | KeyCode::Char('Y') => app.open_compose_panel(),
         // 觸發 BFS 追蹤鏈 Modal
         KeyCode::Char('t') | KeyCode::Char('T') => app.open_bfs_modal(),
         KeyCode::Char('j') | KeyCode::Down => {
@@ -891,14 +1158,32 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            if app.active_tab == ActiveTab::VisualGraph {
+            if matches!(
+                app.modal_state,
+                ModalState::ComposePanel {
+                    selected: Some(_),
+                    ..
+                }
+            ) {
+                app.compose_scroll(3);
+                app.flash.trigger(ActionTag::Zoom);
+            } else if app.active_tab == ActiveTab::VisualGraph {
                 app.zoom = (app.zoom - 0.05).max(0.1); // ponytail: 滾輪向上放大（投射邊界縮小 = Zoom In）
                 app.flash.trigger(ActionTag::Zoom);
                 app.log_throttled("Mouse Scroll: Zoom In", theme::CYAN);
             }
         }
         MouseEventKind::ScrollDown => {
-            if app.active_tab == ActiveTab::VisualGraph {
+            if matches!(
+                app.modal_state,
+                ModalState::ComposePanel {
+                    selected: Some(_),
+                    ..
+                }
+            ) {
+                app.compose_scroll(3);
+                app.flash.trigger(ActionTag::Zoom);
+            } else if app.active_tab == ActiveTab::VisualGraph {
                 app.zoom = (app.zoom + 0.05).min(5.0); // ponytail: 滾輪向下縮小（投射邊界擴大 = Zoom Out）
                 app.flash.trigger(ActionTag::Zoom);
                 app.log_throttled("Mouse Scroll: Zoom Out", theme::CYAN);
@@ -912,6 +1197,25 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 
             // 2. 偵測點擊 Tab 切換：以實際標題文字寬度逐字元命中測試
             //    (Tabs widget 左對齊、標題連續排列，不可用半寬切分)
+            // Compose menu 層：點擊 manifest 即選取
+            if let ModalState::ComposePanel { selected: None, .. } = &app.modal_state {
+                if let Some(r) = app.last_modal_list_area {
+                    let top = r.y + 1;
+                    let bottom = r.y + r.height - 1;
+                    if click_row >= top
+                        && click_row < bottom
+                        && click_col >= r.x
+                        && click_col < r.x + r.width
+                    {
+                        let idx = (click_row - top) as usize;
+                        if idx < app.modal_state.len() {
+                            app.select_compose_manifest(idx);
+                            app.log("Mouse Click: manifest selected", theme::CYAN);
+                        }
+                    }
+                    return;
+                }
+            }
             if let Some(tabs_area) = app.last_tabs_area {
                 if click_row == tabs_area.y + 1 {
                     let mut col = usize::from(tabs_area.x) + 1; // 內側起點：邊框佔 1 列
@@ -940,7 +1244,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     }
                 }
             }
-
             // 3. 偵測點擊 Explorer 節點列表 (動態區域)
             if app.active_tab == ActiveTab::Explorer {
                 if let Some(list_area) = app.last_list_area {
@@ -1332,4 +1635,83 @@ fn draw_explorer(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         )
         .wrap(ratatui::widgets::Wrap { trim: true });
     f.render_widget(inspector_p, main_chunks[1]);
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::*;
+
+    #[test]
+    fn test_split_ref_plain_and_qualified() {
+        assert_eq!(split_ref("ws-a"), ("ws-a".to_string(), String::new()));
+        assert_eq!(
+            split_ref("ws-a::src/main.rs"),
+            ("ws-a".to_string(), "src/main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_render_compose_ascii_boxes_and_edges() {
+        use graphify_core::compose_merge::UnifiedGraph;
+        use graphify_core::types::{Edge, FileType, Node, NodeId};
+
+        let node = |ws: &str, name: &str| Node {
+            id: NodeId(format!("{ws}::{name}")),
+            label: name.to_string(),
+            kind: "function".to_string(),
+            language: "rust".to_string(),
+            file_type: FileType::Code,
+            source_file: format!("{ws}/src/{name}.rs"),
+            start_line: 1,
+            end_line: 2,
+            doc_comment: None,
+            description: None,
+            metadata: None,
+        };
+        let container = |ws: &str| Node {
+            id: NodeId(ws.to_string()),
+            label: ws.to_string(),
+            kind: "workspace".to_string(),
+            language: String::new(),
+            file_type: FileType::Document,
+            source_file: String::new(),
+            start_line: 0,
+            end_line: 0,
+            doc_comment: None,
+            description: None,
+            metadata: None,
+        };
+        let unified = UnifiedGraph {
+            nodes: vec![
+                container("ws-a"),
+                node("ws-a", "main"),
+                container("ws-b"),
+                node("ws-b", "lib"),
+            ],
+            edges: vec![Edge {
+                source: NodeId("ws-a::main".to_string()),
+                target: NodeId("ws-b::lib".to_string()),
+                relation: "uses".to_string(),
+                source_file: "test.yaml".to_string(),
+                source_location: String::new(),
+                confidence: "INFERRED".to_string(),
+                description: None,
+            }],
+            workspace_count: 2,
+            cross_edges: 1,
+        };
+
+        let lines = render_compose_ascii(&unified);
+        // 容器行：兩個 workspace box（id 顯示於內容第一行，非邊框）
+        let Some(id_row) = lines.get(1) else {
+            panic!("expected id row after top border");
+        };
+        assert!(
+            id_row.contains("ws-a") && id_row.contains("ws-b"),
+            "id row: {id_row}"
+        );
+        // composition 邊
+        let joined = lines.join("\n");
+        assert!(joined.contains("ws-a ── uses ──▶ ws-b"), "edges: {joined}");
+    }
 }
