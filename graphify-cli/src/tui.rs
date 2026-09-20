@@ -1007,6 +1007,31 @@ fn handle_key<B: ratatui::backend::Backend + std::io::Write>(
                 app.log("Keyboard: 'q' Quit", theme::RED);
                 return Ok(true);
             }
+            // Compose diagram 層水平捲動（guard 內放行，否則到不了主 match）
+            KeyCode::Char('h') | KeyCode::Left => {
+                if matches!(
+                    app.modal_state,
+                    ModalState::ComposePanel {
+                        selected: Some(_),
+                        ..
+                    }
+                ) {
+                    app.compose_h_scroll(-4);
+                    app.flash.trigger(ActionTag::Pan);
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if matches!(
+                    app.modal_state,
+                    ModalState::ComposePanel {
+                        selected: Some(_),
+                        ..
+                    }
+                ) {
+                    app.compose_h_scroll(4);
+                    app.flash.trigger(ActionTag::Pan);
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if matches!(app.modal_state, ModalState::PluginPanel { .. }) {
                     app.modal_plugin_next();
