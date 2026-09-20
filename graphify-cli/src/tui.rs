@@ -696,6 +696,10 @@ impl App {
         if let Err(e) = std::env::set_current_dir(&ws.root_path) {
             self.log(format!("chdir failed: {} ({e})", ws.root_path), theme::RED);
         }
+        // 記住最後選擇：下次啟動的 cwd 對齊以此為準
+        if let Ok(db) = graphify_registry::db::RegistryDb::open(&registry_db_path()) {
+            let _ = db.set_active_workspace(&ws.workspace_key);
+        }
         self.flash.trigger(ActionTag::Reset);
         self.log(
             format!("Switched to workspace: {}", ws.root_path),
@@ -856,9 +860,12 @@ fn render_compose_ascii(unified: &graphify_core::compose_merge::UnifiedGraph) ->
 
 pub fn run_tui(graph: GraphOutput) -> Result<()> {
     // 啟動時對齊 active workspace root：從別的目錄啟動 TUI 時，source_file
-    // 相對路徑才能以正確 root 解析（$EDITOR 跳轉、compose 掃描）
+    // 相對路徑才能以正確 root 解析（$EDITOR 跳轉、compose 掃描）。
+    // 防禦：active 記錄必須存在且含 graphify-out/，否則可能是殘留垃圾記錄，
+    // 保持啟動 cwd 不動。
     if let Ok(db) = graphify_registry::db::RegistryDb::open(&graphify_registry::registry_db_path())
         && let Ok(Some(active)) = db.get_active_workspace()
+        && Path::new(&active.root_path).join("graphify-out").is_dir()
     {
         let _ = std::env::set_current_dir(&active.root_path);
     }
