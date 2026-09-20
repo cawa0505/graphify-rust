@@ -1,0 +1,52 @@
+# Graphify 生態系組裝清單 (Assembly Manifest)
+# 視角：以 GraphifyRust (核心) 為中心，串連 Plugins 生態與多語言 SDK。
+# 路徑相對於本檔所在目錄解析。用 `graphify compose validate` 驗證，
+# 或在 TUI Architecture tab (按 3) 選取本檔檢視 ASCII 關聯圖。
+
+workspaces:
+  - id: core
+    path: ..
+  - id: plugins
+    path: ../../GraphifyPlugins
+  - id: sdk
+    path: ../../GraphifySDK
+
+relations:
+  # plugins 依賴 core 的共享型別 (HandoffSnapshot, GraphifyPlugin trait, graph schema)
+  - from: plugins::./graphify-plugin-handoff/src/lib.rs:module
+    type: depends_on
+    to: core::./graphify-core/src/plugin.rs:module
+
+  - from: plugins::./graphify-plugin-opendoc/src/lib.rs:module
+    type: depends_on
+    to: core::./graphify-core/src/plugin.rs:module
+
+  - from: plugins::./graphify-plugin-review/src/lib.rs:module
+    type: depends_on
+    to: core::./graphify-core/src/extract/mod.rs:module
+
+  # mcp 靜態連結第一方 plugins (graphify-mcp/Cargo.toml path deps)
+  - from: core::./graphify-mcp/src/main.rs:module
+    type: integrates
+    to: plugins::./graphify-plugin-handoff/src/lib.rs:module
+
+  - from: core::./graphify-mcp/src/main.rs:module
+    type: integrates
+    to: plugins::./graphify-plugin-opendoc/src/lib.rs:module
+
+  - from: core::./graphify-mcp/src/main.rs:module
+    type: integrates
+    to: plugins::./graphify-plugin-review/src/lib.rs:module
+
+  - from: core::./graphify-mcp/src/main.rs:module
+    type: integrates
+    to: plugins::./graphify-plugin-telemetry/src/lib.rs:module
+
+  - from: core::./graphify-mcp/src/main.rs:module
+    type: integrates
+    to: plugins::./graphify-plugin-test-coverage/src/lib.rs:module
+
+  # SDK 透過 graphify binary 的 Stdio/JSON-RPC 介面與 mcp 通訊
+  - from: sdk
+    type: executes_via
+    to: core::./graphify-mcp/src/main.rs:module
