@@ -1471,7 +1471,13 @@ fn draw_ui(f: &mut ratatui::Frame, app: &mut App) {
     layout::render_footer(f, app.active_tab, &app.flash, chrome.footer);
 
     // 5. 浮動 Modal 疊加 (Clear + 亮紫邊框)
-    app.last_modal_list_area = modal::draw_modal(f, &app.modal_state, app.modal_hover, f.area());
+    // Architecture tab 的 ComposePanel 已內嵌繪製（上方分支），此處跳過避免雙重渲染
+    let compose_embedded = app.active_tab == ActiveTab::Architecture
+        && matches!(app.modal_state, ModalState::ComposePanel { .. });
+    if !compose_embedded {
+        app.last_modal_list_area =
+            modal::draw_modal(f, &app.modal_state, app.modal_hover, f.area());
+    }
     app.flash.tick();
 }
 
