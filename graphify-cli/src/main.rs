@@ -1139,6 +1139,10 @@ fn register_embedded_plugins(host: &mut plugin_host::PluginHost, cwd: &Path, _db
         .with_registry_path(graphify_registry::registry_db_path())
         .bind_for_cli(cwd);
     host.register(Box::new(review));
+
+    // argus
+    let argus = graphify_plugin_argus::ArgusPlugin::new().bind_for_cli(cwd);
+    host.register(Box::new(argus));
 }
 
 /// List all registered workspaces from the global registry.

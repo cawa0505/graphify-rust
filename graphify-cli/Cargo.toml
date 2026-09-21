@@ -21,6 +21,8 @@ graphify-plugin-opendoc = { path = "../../GraphifyPlugins/graphify-plugin-opendo
 graphify-plugin-review = { path = "../../GraphifyPlugins/graphify-plugin-review" }
 # 第一方內嵌 plugin：coverage* 測試覆蓋率橋接工具
 graphify-plugin-test-coverage = { path = "../../GraphifyPlugins/graphify-plugin-test-coverage" }
+# 第一方內嵌 plugin：argus 執行歷程 ↔ graphify 橋接工具
+graphify-plugin-argus = { path = "../../GraphifyPlugins/graphify-plugin-argus" }
 clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -974,6 +974,7 @@ dependencies = [
  "graphify-core",
  "graphify-llm",
  "graphify-memory",
+ "graphify-plugin-argus",
  "graphify-plugin-handoff",
  "graphify-plugin-opendoc",
  "graphify-plugin-review",
@@ -1076,6 +1077,17 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "graphify-plugin-argus"
+version = "0.1.0"
+dependencies = [
+ "graphify-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]
