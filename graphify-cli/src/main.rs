@@ -8,8 +8,6 @@ pub mod plugin_host;
 pub mod rehydrate;
 pub mod skill;
 pub mod snapshot;
-pub mod tui;
-pub mod ui;
 pub mod workspace;
 
 use anyhow::{Context, Result, anyhow};
@@ -1039,7 +1037,7 @@ fn run_tui(graph_path: &Path) -> Result<()> {
             })
         }
     };
-    tui::run_tui(graph)?;
+    graphify_tui::run_tui(graph)?;
     Ok(())
 }
 

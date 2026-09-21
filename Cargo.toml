@@ -6,6 +6,7 @@ members = [
     "graphify-mcp",
     "graphify-cli",
     "graphify-registry",
+    "graphify-tui",
 ]
 resolver = "2"
 

@@ -1,0 +1,17 @@
+[package]
+name = "graphify-tui"
+version = "0.1.0"
+edition = "2024"
+description = "Graphify 專屬 TUI 層：App shell、canvas、圖譜 modal（依賴 rust-tuikit 通用範本層）"
+
+[dependencies]
+graphify-core = { path = "../graphify-core" }
+graphify-registry = { path = "../graphify-registry" }
+# 通用 TUI 範本層（獨立 repo，比照 GraphifyPlugins 慣例以相對路徑引入）
+rust-tuikit = { path = "../../RustTuiKit" }
+ratatui = "0.28"
+crossterm = "0.28"
+anyhow = "1"
+
+[lints]
+workspace = true

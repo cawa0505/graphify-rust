@@ -971,7 +971,6 @@ version = "2.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "crossterm",
  "graphify-core",
  "graphify-llm",
  "graphify-memory",
@@ -980,11 +979,10 @@ dependencies = [
  "graphify-plugin-review",
  "graphify-plugin-test-coverage",
  "graphify-registry",
+ "graphify-tui",
  "qdrant-client",
- "ratatui",
  "rayon",
  "reqwest",
- "rust-tuikit",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1168,6 +1166,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "graphify-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "graphify-core",
+ "graphify-registry",
+ "ratatui",
+ "rust-tuikit",
 ]
 
 [[package]]
