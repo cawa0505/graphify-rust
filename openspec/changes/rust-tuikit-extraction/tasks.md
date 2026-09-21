@@ -21,5 +21,5 @@
 ## 3. 驗證
 - [x] 3.1 `cargo clippy --all-targets` 兩 repo 零警告
 - [x] 3.2 `cargo test` 兩 repo 全綠（含 TestBackend 渲染一致性斷言）
-- [x] 3.3 `cargo fmt` + TUI 手動煙霧測試（inspector/modal/footer 與抽取前一致）
+- [ ] 3.3 TUI 手動煙霧測試（TestBackend 位元級斷言已覆蓋 modal/event log/footer 渲染一致性；live TUI 目檢須啟動 `graphify` 由使用者確認）
 - [x] 3.4 RustTuiKit 首次 commit + push（隱私審計：無 IP/hostname/個人路徑）
