@@ -984,6 +984,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "reqwest",
+ "rust-tuikit",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -2433,6 +2434,13 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
+]
+
+[[package]]
+name = "rust-tuikit"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]

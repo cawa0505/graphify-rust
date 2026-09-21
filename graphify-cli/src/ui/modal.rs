@@ -2,28 +2,14 @@ use crate::ui::theme;
 use graphify_registry::db::{PluginRegistrationRow, PluginStatus, WorkspaceRow};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::path::PathBuf;
 
-/// Modal 列表單一項目
-#[derive(Debug, Clone)]
-pub struct ModalItem {
-    pub text: String,
-    pub fg: Color,
-}
-
-impl ModalItem {
-    #[must_use]
-    pub fn new(text: impl Into<String>, fg: Color) -> Self {
-        Self {
-            text: text.into(),
-            fg,
-        }
-    }
-}
+/// Modal 列表項與置中彈窗計算：通用實作委派 rust-tuikit
+pub use rust_tuikit::modal::{ModalItem, centered_rect};
 
 /// 浮動視窗狀態：BFS 追蹤鏈、關係檢查器、Plugin 面板、或 Workspace 選擇器
 #[derive(Debug, Clone)]
@@ -94,28 +80,6 @@ impl ModalState {
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
-}
-
-/// 計算置中的彈出式視窗區域，可用於 Modal 疊加
-#[must_use]
-pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 /// 繪製浮動 Modal (Clear 疊加 + 亮紫邊框 + 可懸停列表)
@@ -525,76 +489,13 @@ fn draw_list_modal(
     hovered: Option<usize>,
     area: Rect,
 ) -> Rect {
-    let popup = centered_rect(64, 60, area);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(
-            Style::default()
-                .fg(theme::MAUVE)
-                .add_modifier(Modifier::BOLD),
-        )
-        .title(Line::from(Span::styled(
-            title,
-            Style::default()
-                .fg(theme::MAUVE)
-                .add_modifier(Modifier::BOLD),
-        )));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            " [Esc/c] Close · [j/k] Navigate · [Mouse] Hover ",
-            Style::default().fg(theme::SUBTLE),
-        ))),
-        rows[0],
-    );
-
-    let list_items: Vec<ListItem> = items
-        .iter()
-        .enumerate()
-        .map(|(i, it)| {
-            let arrow = if hovered == Some(i) { "▶ " } else { "  " };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    arrow,
-                    Style::default()
-                        .fg(theme::CYAN)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(&it.text, Style::default().fg(it.fg)),
-            ]))
-        })
-        .collect();
-    let list = List::new(list_items)
-        .highlight_style(
-            Style::default()
-                .bg(theme::SURFACE_HI)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    let mut list_state = ListState::default();
-    list_state.select(hovered);
-    f.render_stateful_widget(list, rows[1], &mut list_state);
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {} items ", items.len()),
-            Style::default().fg(theme::SUBTLE),
-        ))),
-        rows[2],
-    );
-
-    rows[1]
+    rust_tuikit::modal::render_list_modal(
+        f,
+        title,
+        " [Esc/c] Close · [j/k] Navigate · [Mouse] Hover ",
+        items,
+        hovered,
+        (64, 60),
+        area,
+    )
 }
