@@ -1002,13 +1002,22 @@ fn run_tui(graph_path: &Path) -> Result<()> {
                     ws.workspace_key
                 );
             }
-            print!("[graphify] Enter number (1-{}): ", ws_list.len());
+            // 預設選 active workspace（Enter 直進）；無 active 才退回 1
+            let default_num = ws_list
+                .iter()
+                .position(|ws| ws.is_active)
+                .map_or(1, |i| i + 1);
+            print!(
+                "[graphify] Enter number (1-{}, default {}): ",
+                ws_list.len(),
+                default_num
+            );
             std::io::Write::flush(&mut std::io::stdout())?;
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
             let parsed = match input.trim().parse::<usize>() {
                 Ok(n) => n,
-                Err(_) if input.trim().is_empty() => 1,
+                Err(_) if input.trim().is_empty() => default_num,
                 _ => {
                     eprintln!("[graphify] Invalid selection.");
                     return Ok(());
