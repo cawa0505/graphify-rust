@@ -39,7 +39,9 @@ graphify-tui 以 path dep `../../RustTuiKit` 引入 rust-tuikit（比照 Graphif
 
 ## Verification Evidence
 
-- `cargo clippy --workspace --all-targets`：0 警告（2026-09-21）
-- `cargo test --workspace`：167 通過（graphify-tui 26 項隨碼遷移測試全綠）
-- git rename 偵測：tui.rs + ui/ 五檔零 diff 遷移
+- `cargo clippy --workspace --all-targets`：0 警告（2026-09-21；2026-09-23 複驗 0 警告）
+- `cargo test --workspace`：167 通過（2026-09-23 複驗 167 通過、0 失敗）
+- git rename 偵測：tui.rs + ui/ 五檔零 diff 遷移（c39f91d，2026-09-23 複驗）
+- 隨碼遷移測試：tui.rs 2 項（compose_tests）、ui/ 五檔 0 項——graphify-tui 本體 2 項
+  （2026-09-23 複驗；早前記錄誤植為 26 項，已依遷移前舊碼實測修正）
 - TUI live 目檢：使用者初驗通過（2026-09-21）
