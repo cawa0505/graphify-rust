@@ -19,5 +19,5 @@
 - [x] 3.3 clippy 全 workspace 乾淨、cargo test 全綠、cargo fmt
 
 ## 4. 收尾
-- [ ] 4.1 文件：docs/cli.md TUI 段落補 `y` 鍵說明
-- [ ] 4.2 openspec archive（實作驗證證據附於 spec）
+- [x] 4.1 文件：docs/cli.md TUI 段落補 `y` 鍵說明
+- [x] 4.2 openspec archive（實作驗證證據附於 spec）
