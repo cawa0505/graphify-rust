@@ -273,6 +273,15 @@ pub enum HandoffCommand {
         #[command(subcommand)]
         command: SkillCommand,
     },
+    /// relay 狀態檔健康檢查（唯讀報告；--fix 刪清單 opt-in；--scan 多 repo）
+    Doctor {
+        /// 刪除所有 DIRTY 檔（relay.json + 同層 .relay/）；刪除前列將刪清單
+        #[arg(long)]
+        fix: bool,
+        /// 掃描指定目錄下（≤3 層）所有 relay 狀態檔；無此旗標只檢查當前 workspace
+        #[arg(long)]
+        scan: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -1241,8 +1250,65 @@ fn run_handoff(command: HandoffCommand) -> Result<()> {
             plugin.relay_add(Path::new(&file), repo.as_deref())?
         }
         HandoffCommand::Skill { command } => run_skill_command(command)?,
+        HandoffCommand::Doctor { fix, scan } => {
+            return run_handoff_doctor(fix, scan.as_deref());
+        }
     };
     println!("{out}");
+    Ok(())
+}
+
+/// `graphify handoff doctor` — relay 狀態檔健康檢查（openspec handoff-doctor）。
+///
+/// 不走 plugin bind：doctor 的身份解析只認 git toplevel 或 cwd（不吃 env
+/// override），唯讀為預設；退出碼 0/1 經 `doctor::exit_code`，掃描根不存在
+/// 屬執行錯誤回退出碼 2。
+fn run_handoff_doctor(fix: bool, scan_root: Option<&Path>) -> Result<()> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let reports = if let Some(root) = scan_root {
+        if !root.is_dir() {
+            eprintln!("[graphify] doctor: scan root not found: {}", root.display());
+            std::process::exit(2);
+        }
+        graphify_plugin_handoff::doctor::scan(root, home.as_deref())
+    } else {
+        let cwd = std::env::current_dir()?;
+        let ws = graphify_plugin_handoff::root::git_toplevel(&cwd).unwrap_or(cwd);
+        graphify_plugin_handoff::doctor::check_dir(&ws, home.as_deref(), false)
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    println!("{}", graphify_plugin_handoff::doctor::render(&reports));
+    if fix {
+        let targets = graphify_plugin_handoff::doctor::deletion_targets(&reports);
+        if !targets.is_empty() {
+            let listing = targets
+                .iter()
+                .map(|t| t.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n  ");
+            println!("will delete:\n  {listing}");
+            let failures = graphify_plugin_handoff::doctor::apply_fix(&targets);
+            for (p, e) in &failures {
+                eprintln!("[graphify] doctor: delete failed: {}: {e}", p.display());
+            }
+            println!(
+                "fixed: {} deleted, {} failed",
+                targets.len() - failures.len(),
+                failures.len()
+            );
+            if failures.is_empty() {
+                return Ok(());
+            }
+            // fix 後仍有殘留 → 退出碼 1。
+            std::process::exit(1);
+        }
+        println!("nothing to fix");
+    }
+    let code = graphify_plugin_handoff::doctor::exit_code(&reports, None);
+    if code != 0 {
+        std::process::exit(code);
+    }
     Ok(())
 }
 
