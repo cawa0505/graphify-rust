@@ -483,10 +483,11 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
                             "project_context": { "type": "string" },
                             "kind": { "type": "string", "enum": ["backend", "frontend", "infra"] }
                         },
-                        "required": ["project_context"]
+                        "required": ["project_context", "path"]
                     }
                 },
                 {
@@ -495,6 +496,7 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
                             "repo": { "type": "string" },
                             "role": { "type": "string" },
                             "phase": { "type": "string" },
@@ -504,7 +506,7 @@ fn handle_request(
                             "debt": { "type": "string" },
                             "kind": { "type": "string" }
                         },
-                        "required": []
+                        "required": ["path"]
                     }
                 },
                 {
@@ -513,7 +515,8 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "repo": { "type": "string", "description": "Repo name (default: cwd basename)" },
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
+                            "repo": { "type": "string", "description": "Repo name (default: workspace root basename)" },
                             "next": { "type": "string", "description": "Next session starter text" },
                             "role": { "type": "string", "description": "Role (e.g. backend/frontend/infra)" },
                             "phase": { "type": "string", "description": "Active phase" },
@@ -522,7 +525,7 @@ fn handle_request(
                             "debt": { "type": "string", "description": "Comma-separated debt tags" },
                             "kind": { "type": "string", "description": "Template kind (backend/frontend/infra)" }
                         },
-                        "required": []
+                        "required": ["path"]
                     }
                 },
                 {
@@ -531,10 +534,11 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
                             "repo": { "type": "string" },
                             "kind": { "type": "string" }
                         },
-                        "required": ["repo"]
+                        "required": ["repo", "path"]
                     }
                 },
                 {
@@ -543,10 +547,11 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
                             "repo": { "type": "string" },
                             "kind": { "type": "string" }
                         },
-                        "required": []
+                        "required": ["path"]
                     }
                 },
                 {
@@ -554,7 +559,10 @@ fn handle_request(
                     "description": "Show relay summary: repos, active baton, spec drift, last update",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {}
+                        "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" }
+                        },
+                        "required": ["path"]
                     }
                 },
                 {
@@ -563,10 +571,11 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
+                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
                             "file": { "type": "string" },
                             "repo": { "type": "string" }
                         },
-                        "required": ["file"]
+                        "required": ["file", "path"]
                     }
                 },
                 {
@@ -1357,6 +1366,16 @@ fn run_relay_tool(
     relay: &mut RelayPlugin,
 ) -> Result<serde_json::Value> {
     let get_str = |key: &str| args.get(key).and_then(|v| v.as_str());
+    // relay-workspace-context D1/D2：relay 的身份來源 SHALL 為 caller 傳入的
+    // workspace `path`（absolute 必填）。gateway 拓撲下 stdio child cwd 恆為
+    // $HOME（systemd），絕不退回 server process cwd 推導身份；未傳或非絕對
+    // 路徑一律凍結錯誤且零檔案寫入。
+    let ws = get_str("path")
+        .filter(|p| Path::new(p).is_absolute())
+        .ok_or_else(|| {
+            anyhow!("workspace context required: pass the absolute path of your workspace")
+        })?;
+    relay.bind_for_cli(Path::new(ws));
     let out = match name {
         "graphify_relay_init" => {
             let project =
@@ -1915,11 +1934,11 @@ mod tests {
 
         let mut plugin = RelayPlugin::new().with_registry_path(dir.join("graphify-test.db"));
         plugin.bind_for_cli(&dir);
-        let empty_args = serde_json::json!({});
+        let empty_args = serde_json::json!({ "path": dir.display().to_string() });
 
         let init_out = run_relay_tool(
             "graphify_relay_init",
-            &serde_json::json!({ "project_context": "test project" }),
+            &serde_json::json!({ "path": dir.display().to_string(), "project_context": "test project" }),
             &mut plugin,
         )?;
         assert!(
@@ -1934,6 +1953,7 @@ mod tests {
         let save_out = run_relay_tool(
             "graphify_relay_save",
             &serde_json::json!({
+                "path": dir.display().to_string(),
                 "repo": "graphify-mcp",
                 "phase": "testing",
                 "conf": 0.8,
@@ -1956,7 +1976,7 @@ mod tests {
 
         let close_out = run_relay_tool(
             "graphify_relay_close",
-            &serde_json::json!({ "repo": "graphify-mcp", "next": "done" }),
+            &serde_json::json!({ "path": dir.display().to_string(), "repo": "graphify-mcp", "next": "done" }),
             &mut plugin,
         )?;
         assert!(
@@ -1998,11 +2018,11 @@ mod tests {
 
         let mut plugin = RelayPlugin::new().with_registry_path(dir.join("graphify-test.db"));
         plugin.bind_for_cli(&dir);
-        let empty_args = serde_json::json!({});
+        let empty_args = serde_json::json!({ "path": dir.display().to_string() });
 
         let init_out = run_relay_tool(
             "graphify_relay_init",
-            &serde_json::json!({ "project_context": "auto-save test" }),
+            &serde_json::json!({ "path": dir.display().to_string(), "project_context": "auto-save test" }),
             &mut plugin,
         )?;
         assert!(
@@ -2018,6 +2038,7 @@ mod tests {
         let close_out = run_relay_tool(
             "graphify_relay_close",
             &serde_json::json!({
+                "path": dir.display().to_string(),
                 "repo": "test-repo",
                 "role": "backend",
                 "phase": "dev",
@@ -2048,6 +2069,57 @@ mod tests {
         if std::env::set_current_dir(&cwd).is_err() {
             let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
         }
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// relay-workspace-context D1/D2：MCP relay 工具未傳 `path` → 凍結錯誤、
+    /// 零檔案寫入（絕不退回 server cwd 推導身份）。
+    #[test]
+    fn test_relay_missing_path_frozen_error_no_writes() -> Result<()> {
+        let suffix: String = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string();
+        let dir = std::env::temp_dir().join(format!("graphify-mcp-relay-nopath-{suffix}"));
+        fs::create_dir_all(&dir)?;
+        let mut plugin = RelayPlugin::new().with_registry_path(dir.join("graphify-test.db"));
+        plugin.bind_for_cli(&dir);
+
+        for (tool, args) in [
+            ("graphify_relay_status", serde_json::json!({})),
+            (
+                "graphify_relay_init",
+                serde_json::json!({ "project_context": "x" }),
+            ),
+            (
+                "graphify_relay_save",
+                serde_json::json!({ "repo": "Foo" }),
+            ),
+            // 相對路徑視同未傳（absolute 必填）。
+            (
+                "graphify_relay_status",
+                serde_json::json!({ "path": "relative/dir" }),
+            ),
+        ] {
+            let err = run_relay_tool(tool, &args, &mut plugin)
+                .err()
+                .expect("missing/relative path must fail loud");
+            assert!(
+                err.to_string().starts_with("workspace context required"),
+                "{tool}: {err}"
+            );
+        }
+        // 零檔案寫入：目錄內只有注入的 registry db 檔名預期，不得出現 relay 產物。
+        let entries: Vec<String> = fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !entries.iter().any(|n| n == "relay.json" || n == ".relay" || n == "specs"),
+            "凍結錯誤不得寫入任何 relay 產物: {entries:?}"
+        );
         fs::remove_dir_all(&dir)?;
         Ok(())
     }

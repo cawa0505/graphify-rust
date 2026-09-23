@@ -25,7 +25,7 @@ use graphify_registry::db::RegistryDb;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1304,6 +1304,47 @@ fn run_handoff_doctor(fix: bool, scan_root: Option<&Path>) -> Result<()> {
             std::process::exit(1);
         }
         println!("nothing to fix");
+    }
+    // relay-workspace-context D4：registry gateway-cwd 汙染檢查（報而詢問）。
+    // `--fix` 不觸發此刪除面；刪除只走互動同意路徑；Non-TTY 僅報告。
+    let db_path = graphify_registry::registry_db_path();
+    if db_path.is_file() {
+        match graphify_plugin_handoff::doctor::check_registry(&db_path, home.as_deref()) {
+            Ok(warns) if !warns.is_empty() => {
+                for (key, why) in &warns {
+                    println!("[WARN] {why}");
+                    println!("       workspace_key: {key}");
+                }
+                if std::io::stdin().is_terminal() {
+                    print!(
+                        "delete these {} polluted registry record(s)? [y/N]: ",
+                        warns.len()
+                    );
+                    io::stdout().flush()?;
+                    let mut ans = String::new();
+                    io::stdin().read_line(&mut ans)?;
+                    if ans.trim().eq_ignore_ascii_case("y") {
+                        let db = graphify_registry::RegistryDb::open(&db_path)?;
+                        for (key, _) in &warns {
+                            match db.delete_workspace(key) {
+                                Ok(()) => println!("deleted registry record {key}"),
+                                Err(e) => {
+                                    eprintln!("[graphify] doctor: delete failed: {key}: {e}");
+                                }
+                            }
+                        }
+                    } else {
+                        println!("skipped: registry records left unchanged");
+                    }
+                } else {
+                    println!(
+                        "non-interactive session: registry records left unchanged (re-run in a TTY to delete)"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[graphify] doctor: registry check skipped: {e}"),
+        }
     }
     let code = graphify_plugin_handoff::doctor::exit_code(&reports, None);
     if code != 0 {
