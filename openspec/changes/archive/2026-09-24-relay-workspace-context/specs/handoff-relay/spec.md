@@ -10,7 +10,7 @@ relay 的身份推導從「server process cwd」改為「caller 傳入的 worksp
 
 relay root SHALL 為 workspace root。workspace root 的解析來源 SHALL 為：(1) `GRAPHIFY_RELAY_ROOT` env override（顯式表態，優先級最高）；(2) caller 傳入的 workspace context `path` 參數 —— MCP 端必填（absolute），CLI 端 optional（缺省時以 process cwd 為 caller path）；(3) caller path 位於 git repo 內時為 `git rev-parse --show-toplevel`，否則為 caller path 本身。非 git 專案目錄作為 workspace root 合法（D4 模型）。`relay_init` 拒絕在非 git 的 `$HOME` 本身建立 relay root（凍結錯誤文：`refusing to init relay at $HOME; run inside a project directory or set GRAPHIFY_RELAY_ROOT`；`GRAPHIFY_RELAY_ROOT` env 表態或 `$HOME` 為 git repo 時豁免）。
 
-MCP relay 工具（save/init/switch/resume/close/status）SHALL 要求 caller 傳入 `path`（absolute，必填）。未傳時 SHALL 回凍結錯誤 `workspace context required: pass the absolute path of your workspace` 且 SHALL NOT 寫入任何檔案 —— 絕不退回 server process cwd 推導身份（gateway 拓撲下 stdio child cwd 恆為 `$HOME`，退回即身分恆錯且重建 stray 檔）。CLI direct-spown 路徑不變更：process cwd 可用時維持現行為。
+MCP relay 工具（save/init/switch/resume/close/status）SHALL 要求 caller 傳入 `path`（absolute，必填）。未傳時 SHALL 回凍結錯誤 `workspace context required: pass the absolute path of your workspace` 且 SHALL NOT 寫入任何檔案 —— 絕不退回 server process cwd 推導身份（gateway 拓撲下 stdio child cwd 恆為 `$HOME`，退回即身分恆錯且重建 stray 檔）。CLI direct-spawn 路徑不變更：process cwd 可用時維持現行為。
 
 #### Scenario: 不再向上搜尋 relay 狀態檔
 

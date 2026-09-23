@@ -36,7 +36,7 @@ MCP 端六個 relay 工具 schema 增加 `path`（absolute，必填）。CLI 端
 
 ### D4 — registry 汙染：報而詢問是否刪（定案 2026-09-24 修訂）
 
-doctor 對 registry 的 workspace 紀錄做唯讀檢查：`path` 為非 git 目錄（如 /home/zeng）且與 `workspace_key` derive 來源不符 → WARN（"registry workspace record likely polluted by gateway cwd; verify manually"）。doctor SHALL NOT 自動刪除；輸出後 SHALL 詢問使用者是否刪除該紀錄（互動確認），使用者明確同意才執行刪除。直接-spawn 與 `--fix` 皆不觸發此刪除面 —— 刪除只走互動詢問同意路徑。
+doctor 對 registry 的 workspace 紀錄做唯讀檢查：`root_path` 為存在目錄但取不到 git toplevel（非 git），且（`derive_workspace_key(root_path)` 與紀錄 key 不符，或 `root_path == $HOME`）→ WARN（"registry workspace record likely polluted by gateway cwd; verify manually"）。實測真實汙染紀錄（`/home/zeng`）的 key 正是由 gateway cwd 自身 derive，key 相符不能作為免查條件，故列 $HOME 等值補位。doctor SHALL NOT 自動刪除；輸出後 SHALL 詢問使用者是否刪除該紀錄（互動確認），使用者明確同意才執行刪除。Non-TTY 跳過刪除僅報告；`--fix` 不觸發此刪除面 —— 刪除只走互動詢問同意路徑。
 
 ### D5 — 測試：gateway 拓撲模擬
 

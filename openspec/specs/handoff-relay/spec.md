@@ -42,11 +42,11 @@
 
 ### Requirement: repo 路徑寫入時驗證
 
-`relay_save` SHALL 在寫入前將 repo 解析為實際目錄：依序嘗試（1）repo 參數為絕對路徑且該目錄存在、（2）`relay root.join(repo)` 存在且位於 relay root 內、（3）MCP server cwd 相對路徑存在。候選僅需為存在的目錄（repo 是否為 git repo 不影響寫入驗收，僅影響渲染時的 git 狀態診斷）。全部無法解析時 SHALL 拒絕寫入，錯誤訊息 SHALL 列出所有嘗試路徑。解析成功時 `RepoState.path` SHALL 儲存絕對路徑，不得以裸 repo 名稱作為路徑預設值。
+`relay_save`/`relay_close` 寫入前 SHALL 把 repo 參數解析為實際目錄：絕對路徑 → root 相對 → caller path 相對；全部失敗 → fail-loud 拒寫，錯誤訊息 SHALL 列出嘗試路徑（`repo path could not be resolved. Tried: ...`）。解析基準 SHALL 為 caller workspace（root 與 caller path），SHALL NOT 以 server process cwd 為解析基準。錯誤訊息中的 Tried 候選 SHALL 去重（同一候選路徑 SHALL NOT 重複列出；重複列出即代表解析退回 cwd 同源，為回歸信號）。preserved：root 外的絕對路徑明確表態 → 允許；monorepo 子目錄不誤殺（同名目錄存在即合法）。候選僅需為存在的目錄（repo 是否為 git repo 不影響寫入驗收，僅影響渲染時的 git 狀態診斷）。解析成功時 `RepoState.path` SHALL 儲存絕對路徑，不得以裸 repo 名稱作為路徑預設值。
 
 #### Scenario: 路徑無法解析時拒絕寫入
 
-- **GIVEN** repo 名 "Foo" 在 root 下與 cwd 下皆無對應目錄
+- **GIVEN** repo 名 "Foo" 在 root 下與 caller path 下皆無對應目錄
 - **WHEN** 呼叫 `relay_save(repo="Foo", ...)`
 - **THEN** 寫入被拒絕，狀態檔位元組不變
 - **AND** 錯誤訊息包含所有嘗試過的路徑
@@ -56,6 +56,20 @@
 - **GIVEN** repo 紀錄的 path 指向存在但 git 指令失敗的目錄
 - **WHEN** 渲染該 repo 的 handoff
 - **THEN** Status 顯示 `"(git status unavailable: <解析後路徑>)"`，不顯示誤導性的 "(not a git repo)"
+
+#### Scenario: Tried 候選去重
+
+- **GIVEN** 使用者 `Foo` 不是有效路徑，且 `Foo` 在 root 與 caller path 下解析為同一候選（caller path == root，CLI direct-spawn 常態）
+- **WHEN** 呼叫 save 失敗時列出嘗試路徑
+- **THEN** 錯誤訊息中該候選 SHALL 只出現一次
+- **AND** 候選 SHALL 基於 caller workspace（root/caller path），SHALL NOT 依 server cwd 產生第四個同源候選
+
+#### Scenario: gateway 拓撲下 repo 解析基於 caller path
+
+- **GIVEN** nexus caller 儲存 repo 帶 `path=/mnt/.../repos/NexusHub`，repo 參數為 root 下相對名稱
+- **WHEN** 解析 repo 目錄
+- **THEN** 基準為 relay root（= caller path 的 git toplevel），成功時 `RepoState.path` 為 caller workspace 下的真實目錄
+- **AND** 失敗時 Tried 候選不包含 server cwd 同源路徑
 
 ### Requirement: Per-repo state snapshot
 
@@ -86,9 +100,11 @@
 
 ### Requirement: relay root 綁定於 workspace root
 
-relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up）搜尋：cwd 位於 git repo 內時，workspace root 為 `git rev-parse --show-toplevel`；非 git 目錄時為 cwd 本身。workspace root 無 relay 狀態檔時，relay 工具 SHALL 回明確錯誤並指引（`relay_init` 或 `GRAPHIFY_RELAY_ROOT` env override），不得靜默建立或共用狀態檔。設定 `GRAPHIFY_RELAY_ROOT` 時 SHALL 跳過 workspace root 解析，直接綁定該路徑。
+relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up）搜尋。workspace root 的解析來源 SHALL 為：(1) `GRAPHIFY_RELAY_ROOT` env override（顯式表態，優先級最高）；(2) caller 傳入的 workspace context `path` 參數 —— MCP 端必填（absolute），CLI 端 optional（缺省時以 process cwd 為 caller path）；(3) caller path 位於 git repo 內時為 `git rev-parse --show-toplevel`，否則為 caller path 本身。非 git 專案目錄作為 workspace root 合法（D4 模型）。workspace root 無 relay 狀態檔時，relay 工具 SHALL 回明確錯誤並指引（`relay_init` 或 `GRAPHIFY_RELAY_ROOT` env override），不得靜默建立或共用狀態檔。
 
 `relay_init` SHALL 拒絕在非 git 的 `$HOME` 本身建立 relay root（凍結錯誤訊息：`refusing to init relay at $HOME; run inside a project directory or set GRAPHIFY_RELAY_ROOT`），SHALL NOT 寫入任何檔案。此拒絕 SHALL NOT 適用於：(a) `$HOME` 為 git repo（罕見但合法）；(b) `GRAPHIFY_RELAY_ROOT` 明確指向 `$HOME`（顯式表態優先）。
+
+MCP relay 工具（save/init/switch/resume/close/status）SHALL 要求 caller 傳入 `path`（absolute，必填）。未傳時 SHALL 回凍結錯誤 `workspace context required: pass the absolute path of your workspace` 且 SHALL NOT 寫入任何檔案 —— 絕不退回 server process cwd 推導身份（gateway 拓撲下 stdio child cwd 恆為 `$HOME`，退回即身分恆錯且重建 stray 檔）。CLI direct-spawn 路徑不變更：process cwd 可用時維持現行為。
 
 #### Scenario: 不再向上搜尋 relay 狀態檔
 
@@ -106,13 +122,13 @@ relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up�
 #### Scenario: init 於非 git 的 $HOME 硬錯
 
 - **GIVEN** 使用者在非 git 目錄的 `$HOME` 本身執行 `relay_init`，且未設定 `GRAPHIFY_RELAY_ROOT`
-- **WHEN** init 解析 workspace root = cwd = `$HOME`
+- **WHEN** init 解析 workspace root = caller path = `$HOME`
 - **THEN** 回傳錯誤 `refusing to init relay at $HOME; run inside a project directory or set GRAPHIFY_RELAY_ROOT`
 - **AND** `$HOME` 下 SHALL NOT 新增 relay.json、specs/、.code-relay/ 任何檔案
 
 #### Scenario: $HOME 為 git repo 時允許 init
 
-- **GIVEN** `$HOME` 本身為 git repo（含 `.git`）且無 relay.json
+- **GIVEN** `$HOME` 本身為 git repo（含有效 `.git` 結構）且無 relay.json
 - **WHEN** 在 `$HOME` 執行 `relay_init`
 - **THEN** init 正常成功（workspace root = git toplevel = `$HOME`）
 
@@ -122,6 +138,27 @@ relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up�
 - **WHEN** 在任意目錄執行 `relay_init`
 - **THEN** init 於 `/home/user` 成功（顯式表態優先於 $HOME 防線）
 
+#### Scenario: nexus gateway caller 傳 path
+
+- **GIVEN** nexus 管理的 graphify-mcp 啟動於非 git 的 `$HOME`（systemd cwd），caller 呼叫 save 帶 `path=/mnt/.../repos/NexusHub`
+- **WHEN** save 解析 relay root
+- **THEN** root 落在 `/mnt/.../repos/NexusHub` 的 git toplevel
+- **AND** relay.json 寫入該 workspace，`RepoState.path` 為真實目錄（絕對路徑）
+- **AND** 渲染診斷顯示該 repo 的真實 git commit 與 project_context
+
+#### Scenario: MCP 未傳 path 時凍結錯誤且零寫入
+
+- **GIVEN** graphify-mcp 啟動於非 git 的 `$HOME`，caller 未傳 `path`
+- **WHEN** 呼叫任何 relay MCP 工具
+- **THEN** 回錯誤 `workspace context required: pass the absolute path of your workspace`
+- **AND** `$HOME` 下 SHALL NOT 新增 relay.json、specs/、.code-relay/、.relay/ 任何檔案
+
+#### Scenario: CLI direct-spawn 不回歸
+
+- **GIVEN** 使用者在 git repo 內直接執行 `graphify handoff`（無 path 參數）
+- **WHEN** handoff 解析 workspace root
+- **THEN** 維持現行為（process cwd 的 git toplevel），零行為變更
+
 ## Verification Evidence
 
 - 2026-09-24 實作完成（change `relay-multi-repo-isolation`，實作於 GraphifyPlugins/graphify-plugin-handoff）：
@@ -130,3 +167,9 @@ relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up�
   - `cargo clippy --all-targets`：0 警告；`cargo fmt --check`：通過（兩 repo）
   - 實機 e2e（graphify CLI binary、臨時 git repo）：init 落 `git rev-parse --show-toplevel`、baton 無條件切換、per-repo context 不洩漏、`relay.json` 的 `path` 存絕對路徑、bare 目錄回 NoRoot 凍結文、`GRAPHIFY_RELAY_ROOT` 指向檔案生效、git status 渲染正常
   - `openspec validate relay-multi-repo-isolation --strict`：valid
+- 2026-09-24 補完（change `relay-workspace-context`，gateway 拓撲盲點）：
+  - `cargo test -p graphify-plugin-handoff`：89 passed / 0 failed（含 $HOME 硬錯三情境、Tried 去重）
+  - `cargo test -p graphify-cli -p graphify-mcp`：52 passed / 0 failed（含 MCP 未傳 path 凍結錯 + 零寫入）
+  - 實機 e2e（gateway 模擬）：graphify-mcp 以非 git 假家目錄為 cwd 啟動 → status 無 path 回凍結錯、init/save 帶 `path` 落 NexusHub git toplevel、`$HOME` 零 relay 產物；CLI direct-spawn 無 path 維持現行為
+  - doctor registry 檢查（報而詢問）：Non-TTY WARN + 跳過；TTY y → 刪除汙染紀錄（真實 `eb38da5bcf0085df|/home/zeng` 已清理）、n → 零變更
+  - `openspec validate relay-workspace-context --strict`：valid
