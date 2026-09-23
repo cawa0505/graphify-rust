@@ -1928,6 +1928,9 @@ mod tests {
                 .is_some_and(|s| s.contains("Initialized relay at"))
         );
 
+        // D3：repo 候選目錄須存在於 relay root 內才可 save。
+        fs::create_dir_all(dir.join("graphify-mcp"))?;
+
         let save_out = run_relay_tool(
             "graphify_relay_save",
             &serde_json::json!({
@@ -2007,6 +2010,9 @@ mod tests {
                 .as_str()
                 .is_some_and(|s| s.contains("Initialized relay at"))
         );
+
+        // D3：repo 候選目錄須存在於 relay root 內才可 save/close。
+        fs::create_dir_all(dir.join("test-repo"))?;
 
         // Close with all save params in one shot — no relay_save called first
         let close_out = run_relay_tool(
