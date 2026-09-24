@@ -435,12 +435,17 @@ fn handle_request(
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "workspace_key": { "type": "string", "description": "Workspace key (auto-detected from current directory when omitted)" },
+                            "workspace_key": { "type": "string", "description": "Workspace key (defaults to the registry active workspace; auto-detects from the current directory if none is active)" },
                             "query": { "type": "string" },
                             "limit": { "type": "integer", "default": 10 }
                         },
                         "required": ["query"]
                     }
+                },
+                {
+                    "name": "graphify_workspace_status",
+                    "description": "Return the currently active workspace's key, root path, and registration status",
+                    "inputSchema": { "type": "object", "properties": {} }
                 },
                 {
                     "name": "graphify_compose_read",
@@ -762,7 +767,7 @@ fn handle_request(
                 let host = plugin_host.borrow();
                 let plugin_tools = host.list_tools();
                 drop(host);
-                let mut builtin = vec![
+                let builtin = vec![
                     (
                         "graphify_help",
                         "List all available tools with descriptions",
@@ -789,6 +794,10 @@ fn handle_request(
                     (
                         "graphify_memory_query",
                         "Semantic memory query over the knowledge graph",
+                    ),
+                    (
+                        "graphify_workspace_status",
+                        "Return the active workspace's key, root path, and registration status",
                     ),
                     (
                         "graphify_relay_init",
@@ -829,10 +838,31 @@ fn handle_request(
                         "Extract compact AST skeleton from a source file",
                     ),
                 ];
-                builtin.sort_by(|a, b| a.0.cmp(b.0));
+                // Task 2.2: group by domain (help first, then alphabetical domains).
+                let mut groups: std::collections::BTreeMap<String, Vec<(&str, &str)>> =
+                    std::collections::BTreeMap::new();
+                for &(name, desc) in &builtin {
+                    let domain = name
+                        .strip_prefix("graphify_")
+                        .and_then(|rest| rest.split('_').next())
+                        .unwrap_or("misc")
+                        .to_string();
+                    groups.entry(domain).or_default().push((name, desc));
+                }
                 let mut text = String::from("## Graphify MCP Tools\n\n");
-                for (name, desc) in &builtin {
-                    let _ = writeln!(text, "- **`{name}`**: {desc}");
+                if let Some(entries) = groups.remove("help") {
+                    text.push_str("### help\n\n");
+                    for (name, desc) in entries {
+                        let _ = writeln!(text, "- **`{name}`**: {desc}");
+                    }
+                    text.push('\n');
+                }
+                for (domain, entries) in groups {
+                    let _ = write!(text, "### {domain}\n\n");
+                    for (name, desc) in entries {
+                        let _ = writeln!(text, "- **`{name}`**: {desc}");
+                    }
+                    text.push('\n');
                 }
                 // Plugin tools from the host (returns Vec<Value>)
                 if !plugin_tools.is_empty() {
@@ -906,9 +936,60 @@ fn handle_request(
 
             // Restricted core-memory query (Safe Memory Gateway). Read-only,
             // workspace-scoped; explicit unavailable status when memory is off.
+            if tool_name == "graphify_workspace_status" {
+                return match graphify_registry::RegistryDb::open(
+                    &graphify_registry::registry_db_path(),
+                )
+                .and_then(|db| db.get_active_workspace())
+                {
+                    Ok(Some(row)) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text": serde_json::json!({
+                                "workspace_key": row.workspace_key,
+                                "root_path": row.root_path,
+                                "is_active": row.is_active,
+                                "registered": true,
+                            }).to_string() }]
+                        })),
+                        error: None,
+                    },
+                    Ok(None) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::json!({
+                            "content": [{ "type": "text", "text":
+                                "workspace: no active workspace registered (run graphify index to register one)" }]
+                        })),
+                        error: None,
+                    },
+                    Err(e) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("Workspace status error: {e}"),
+                        }),
+                    },
+                };
+            }
+
             if tool_name == "graphify_memory_query" {
+                // Task 4.1 (spec: mcp-workspace-context): workspace_key
+                // omitted -> default to the registry's active workspace key.
+                // Registry lookup is advisory; with no active workspace the
+                // service keeps its cwd auto-detect fallback.
+                let active_key =
+                    graphify_registry::RegistryDb::open(&graphify_registry::registry_db_path())
+                        .and_then(|db| db.get_active_workspace())
+                        .ok()
+                        .flatten()
+                        .map(|row| row.workspace_key);
+                let args = inject_active_workspace_key(&tool_arguments, active_key.as_deref());
                 let service = memory_query.borrow();
-                return match service.query(&tool_arguments) {
+                return match service.query(&args) {
                     Ok(val) => JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,
@@ -1031,7 +1112,7 @@ fn handle_request(
             // (sync_toon must have run first); queries return bindings in
             // graphify.db. Slice 0 is self-contained (no CRG HTTP dependency).
             //
-            // Host responsibility (reviewIngest)：將已索引的 GraphOutput
+            // Host responsibility (graphify_review_ingest)：將已索引的 GraphOutput
             // 經由 sync_toon 傳入 plugin 記憶體快取，再做 line→symbol
             // 解析；保證 line 升維至 canonical NodeId 時有圖譜可對齊。
             if matches!(
@@ -1042,7 +1123,7 @@ fn handle_request(
                     | "graphify_review_search_crg"
             ) {
                 // 所有 review 工具都需要 graph 快取做 line→symbol 升維；
-                // 餵 graph 後再進 dispatch（reviewIngest 之外的工具也需圖譜）。
+                // 餵 graph 後再進 dispatch（graphify_review_ingest 之外的工具也需圖譜）。
                 let toon_str = {
                     let state = match state_lock.read() {
                         Ok(s) => s,
@@ -1084,7 +1165,7 @@ fn handle_request(
             }
 
             // Embedded telemetry tools: Draco Telemetry bridge — same
-            // host-responsibility pattern as reviewIngest：telemetryIngest
+            // host-responsibility pattern as graphify_review_ingest：graphify_telemetry_ingest
             // 前先經由 sync_toon 餵入已索引的 GraphOutput，line→symbol
             // 升維時才有圖譜可對齊。source="file" 走路徑；source="draco-mcp"
             // 走 Draco 輪詢（在 run_telemetry_tool 分派）。
@@ -1137,7 +1218,7 @@ fn handle_request(
 
             // Embedded coverage tools: test coverage bridge — LCOV/JSON
             // ingest resolves line→symbol against the cached GraphOutput;
-            // coverageIngest 前先餵 graph 讓 line→symbol 升維有圖譜可對齊。
+            // graphify_coverage_ingest 前先餵 graph 讓 line→symbol 升維有圖譜可對齊。
             if matches!(
                 tool_name,
                 "graphify_coverage_ingest"
@@ -1273,7 +1354,7 @@ fn handle_request(
                         }
                         let mut host = plugin_host.borrow_mut();
                         host.broadcast_graph_updated(&serde_json::json!({
-                            "kind": "indexed",
+                            "kind": "manual",
                             "workspace_key": workspace_key,
                         }));
                     }
@@ -1708,6 +1789,31 @@ fn run_coverage_tool(
         }
         _ => anyhow::bail!("Unsupported coverage tool: {name}"),
     }
+}
+
+/// Task 4.1 (spec: mcp-workspace-context): default `workspace_key` to the
+/// registry's active workspace when omitted. Explicit keys always win; with
+/// no active workspace the arguments pass through unchanged (the memory
+/// service keeps its cwd auto-detect fallback).
+fn inject_active_workspace_key(
+    args: &serde_json::Value,
+    active_workspace_key: Option<&str>,
+) -> serde_json::Value {
+    let mut value = args.clone();
+    let explicit = value
+        .get("workspace_key")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty());
+    if explicit {
+        return value;
+    }
+    if let (Some(key), Some(obj)) = (active_workspace_key, value.as_object_mut()) {
+        obj.insert(
+            "workspace_key".to_string(),
+            serde_json::Value::String(key.to_string()),
+        );
+    }
+    value
 }
 
 fn handle_tool_call(
@@ -2242,5 +2348,87 @@ mod tests {
         assert_eq!(conns[0]["label"], "uses");
         let _ = dir.close();
         Ok(())
+    }
+
+    // Task 7.2 (spec: mcp-auto-broadcast line 29): reindex broadcast MUST
+    // carry trigger kind `manual`, not `indexed`.
+    #[test]
+    fn test_reindex_broadcast_kind_is_manual() -> Result<()> {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let src = fs::read_to_string(format!("{manifest}/src/main.rs"))?;
+        let start = src
+            .find("if tool_name == \"graphify_graph_reindex\" {")
+            .ok_or_else(|| anyhow::anyhow!("reindex dispatch not found"))?;
+        let window: String = src[start..].lines().take(60).collect::<Vec<_>>().join("\n");
+        assert!(
+            window.contains("\"kind\": \"manual\""),
+            "reindex broadcast must emit trigger kind manual (mcp-auto-broadcast)"
+        );
+        assert!(
+            !window.contains("\"kind\": \"indexed\""),
+            "reindex broadcast must not emit kind indexed"
+        );
+        Ok(())
+    }
+
+    // Task 4.2 (spec: mcp-workspace-context): workspace_status returns the
+    // active workspace's key, root path, and registration status.
+    #[test]
+    fn test_workspace_status_reports_active_workspace() -> Result<()> {
+        let tmp = tempfile::Builder::new()
+            .tempfile()?
+            .into_temp_path()
+            .keep()?;
+        let db = graphify_registry::RegistryDb::open(&tmp)?;
+        db.upsert_workspace("ws-alpha", "/tmp/ws-alpha")?;
+        let row = db
+            .get_active_workspace()?
+            .ok_or_else(|| anyhow::anyhow!("active workspace missing"))?;
+        let out = format!("{}|{}|{}", row.workspace_key, row.root_path, row.is_active);
+        assert_eq!(out, "ws-alpha|/tmp/ws-alpha|true");
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    // Task 4.2 empty-state: no active workspace registered -> clear empty
+    // signal (not an error), per mcp-error-protocol three-state protocol.
+    #[test]
+    fn test_workspace_status_no_active_is_empty_signal() -> Result<()> {
+        let dir = tempfile::TempDir::new()?;
+        let db = graphify_registry::RegistryDb::open(&dir.path().join("reg.db"))?;
+        let missing = db.get_active_workspace()?;
+        assert!(
+            missing.is_none(),
+            "empty registry must yield None (empty-result signal)"
+        );
+        Ok(())
+    }
+
+    // Task 7.3 (spec: mcp-workspace-context): memory_query without
+    // workspace_key defaults to the registry active workspace key;
+    // explicit keys always override.
+    #[test]
+    fn test_memory_query_defaults_to_active_workspace() {
+        let no_key = serde_json::json!({ "query": "q" });
+        let injected = inject_active_workspace_key(&no_key, Some("ws-active"));
+        assert_eq!(
+            injected["workspace_key"].as_str(),
+            Some("ws-active"),
+            "omitted key must default to the active workspace"
+        );
+
+        let explicit = serde_json::json!({ "query": "q", "workspace_key": "ws-explicit" });
+        let untouched = inject_active_workspace_key(&explicit, Some("ws-active"));
+        assert_eq!(
+            untouched["workspace_key"].as_str(),
+            Some("ws-explicit"),
+            "explicit key always overrides the active workspace"
+        );
+
+        let absent = inject_active_workspace_key(&no_key, None);
+        assert!(
+            absent.get("workspace_key").is_none(),
+            "no active workspace -> no injection (service keeps cwd fallback)"
+        );
     }
 }

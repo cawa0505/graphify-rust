@@ -237,4 +237,24 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn disabled_memory_states_not_configured_enabled() -> Result<()> {
+        // mcp-error-protocol frozen phrase: the response SHALL explicitly
+        // state "memory is not configured/enabled".
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let store = QdrantMemoryStore::new(LLMConfig::default().memory.long_term, None);
+        let service = MemoryQueryService { runtime, store };
+        let result = service.query(&json!({ "workspace_key": "ws", "query": "x" }));
+        let Err(err) = result else {
+            panic!("expected unavailable status, got Ok result");
+        };
+        assert!(
+            err.to_string().contains("memory is not configured/enabled"),
+            "frozen phrase missing from error: {err}"
+        );
+        Ok(())
+    }
 }

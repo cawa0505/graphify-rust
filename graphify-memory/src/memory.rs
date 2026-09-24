@@ -125,7 +125,8 @@ pub trait MemorySearcher: Send + Sync {
     async fn query(&self, input: MemoryQueryInput) -> Result<MemoryQueryResult> {
         if !self.is_available() {
             return Ok(MemoryQueryResult::Unavailable(
-                "Semantic memory is not enabled in configuration".to_string(),
+                "memory is not configured/enabled: semantic memory is disabled in configuration"
+                    .to_string(),
             ));
         }
 
