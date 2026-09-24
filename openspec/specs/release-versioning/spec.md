@@ -2,7 +2,7 @@
 
 Defines the Graphify v2.0-alpha release versioning strategy: workspace crate version bump, git tag naming, and the mandatory release checklist, serving as the template for future beta/GA releases.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Workspace crate version alignment
 All workspace crates (`graphify-core`, `graphify-llm`, `graphify-memory`, `graphify-mcp`, `graphify-registry`, `graphify-cli`) MUST carry the same release version within a single release. The v2.0-alpha release MUST use version `2.0.0-alpha.1` across all crates, with `Cargo.lock` synchronized.

@@ -2,7 +2,7 @@
 
 Upgrade the existing TUI graph inspector (currently bound to the current working directory's `graphify-out/graph.toon`) into a workspace-aware monitor: a workspace switcher driven by the SQLite Global Registry, a plugin health panel fed by `plugin_registrations`, and a `[F5]` one-key recovery action (SPEC-2026-v2beta §3). The change must preserve the existing inspector's simplicity — no global architectural rewrite of the TUI.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Workspace selection at TUI startup
 

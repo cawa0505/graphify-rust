@@ -4,7 +4,7 @@
 
 定義 `graphify handoff doctor` 的健康檢查語意：relay 狀態檔的檢查項判定準則（dirty / info / clean）、唯讀報告為預設行為、`--fix` 刪除的 opt-in 邊界、`--scan` 多 repo 掃描、退出碼契約。目標：把 relay-multi-repo-isolation 之後的人工清理準則產品化為可重跑、可驗證的指令，且任何情況下 doctor 預設不修改使用者檔案。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 唯讀報告為預設行為
 

@@ -2,7 +2,7 @@
 
 Defines the lifecycle policy for handoff snapshots in the registry: automatic pruning by TTL and per-workspace capacity to prevent unbounded growth of session records.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: TTL expiration
 Handoff snapshots SHALL carry an `expires_at` timestamp defaulting to `created_at + 7 days`. Snapshots past `expires_at` SHALL be deleted automatically.

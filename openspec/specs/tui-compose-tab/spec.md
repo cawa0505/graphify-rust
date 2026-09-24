@@ -1,7 +1,7 @@
 # tui-compose-tab Specification
 
 ## Purpose
-TBD - created by archiving change tui-compose-tab. Update Purpose after archive.
+定義 TUI compose 面板的開啟/關閉、Manifest 選擇、圖譜預覽與 ASCII/SVG 渲染入口，讓使用者在終端內完成跨 workspace 組裝圖的檢視與操作，無需離開 TUI。
 
 ## Requirements
 

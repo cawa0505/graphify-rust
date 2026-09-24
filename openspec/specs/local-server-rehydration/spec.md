@@ -2,7 +2,7 @@
 
 Defines the one-way Local-to-Server Delta Rehydration (RFC-0004 §1.3.1): when the memory engine reconnects to an external Qdrant server after having run in local mode, pending plugin-memory envelope points written while offline are pushed to the server idempotently, the SQLite `last_synced_at` checkpoint advances, local deltas are drained/marked, and the store switches to `StorageMode::ServerUrl`. This is the concrete body of the `SyncJob` trait defined in P2 (sqlite-global-registry), which deliberately deferred the implementation to this change.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: One-off rehydration event on server recovery
 

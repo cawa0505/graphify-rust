@@ -2,7 +2,7 @@
 
 Provides the SQLite Global Registry (`graphify.db`) that tracks workspaces, plugin registrations, and handoff snapshots across the Graphify ecosystem, serving as the routing and rehydration authority for workspace-scoped memory.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Registry database location
 The system SHALL persist the global registry at a platform-standard data directory (`~/.local/share/graphify/graphify.db` on Linux) and SHALL create it automatically on first use if missing.

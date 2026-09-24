@@ -2,7 +2,7 @@
 
 Define the health-state model for plugins registered in the SQLite Global Registry, replacing the current two-state (`Ready`/`Unavailable`) model with the four-state model required by SPEC-2026-v2beta §2.2/§2.3: `Healthy`, `Degraded`, `Unavailable`, and `Quarantined`. This state machine is the single source of truth that the CLI, TUI panel, and circuit breaker all read and write.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Four-state plugin status enum
 

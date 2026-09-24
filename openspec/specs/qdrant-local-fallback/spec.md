@@ -2,7 +2,7 @@
 
 Defines the dual-track vector storage mechanism: a managed local Qdrant process (downloaded on first use from official GitHub Releases, verified by SHA-256, spawned with environment overrides) serving as the zero-server default, with automatic upgrade to an external Qdrant server when available and seamless degrade back to local on disconnection. Replaces the RFC-0004 §1.3 `Qdrant::from_path` pseudocode, which does not exist in any qdrant-client release (0.11.1–1.19.0).
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Managed local Qdrant process
 

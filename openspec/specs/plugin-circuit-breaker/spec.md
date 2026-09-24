@@ -4,7 +4,7 @@ Define the execution protections that keep the Graphify Rust Core stable regardl
 
 > **Adaptation note**: the roadmap's "Hard Timeout (500 ms)" was specced for the CLI's synchronous in-process hook model. At the subprocess boundary the structural isolation is stronger: tool calls are bounded by an existing non-configurable `recv_timeout` ceiling, and notifications are fire-and-forget (a slow plugin cannot stall the gateway). See Requirement: Hard execution timeout below.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Hard execution timeout
 

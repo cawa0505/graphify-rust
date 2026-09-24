@@ -1,9 +1,9 @@
 # Extraction Schema Specification
 
-## 1. 目的 (Purpose)
+## Purpose
 定義 `graph.json` 輸出的圖譜 JSON Schema，做為 GraphifyRust 與舊版 Python 工具（如 HTML 視覺化與分析器）之間 100% 強相容的物理契約。
 
-## 2. 規格要求 (Requirements)
+## Requirements
 
 ### 2.1 節點結構要求 (Node Structure Requirement)
 產出的每個節點（Node）物件必須包含且僅能包含以下物理欄位：

@@ -2,7 +2,7 @@
 
 Defines the passive-triggered synchronization policy for the embedding provider: no background daemon polling, with provider health checked only at CLI command or TUI startup boundaries.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: No daemon polling
 The system SHALL NOT run a background polling daemon or periodic timer to monitor embedding provider health. Provider recovery is only detected at the next user-initiated command or TUI startup.

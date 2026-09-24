@@ -55,6 +55,12 @@ The static extraction module SHALL support multi-threaded parallel AST parsing o
 ### Requirement: Petgraph Memory Allocation Optimizations
 The graph construction engine SHALL pre-allocate memory for both nodes and edges using `Graph::with_capacity` to prevent multiple heap-reallocation copies and memory fragmentation during large codebase processing.
 
+#### Scenario: Building a graph for a large repository
+- GIVEN a codebase with several thousand nodes and edges
+- WHEN the graph engine constructs the in-memory graph
+- THEN it SHALL allocate capacity with `Graph::with_capacity` before inserting nodes and edges
+- AND the construction SHALL NOT trigger repeated heap reallocation growth passes
+
 ### Requirement: Local Embeddings & Qdrant Vector Store Architecture
 To support thread-safe long-term memory (LTM) without cloud token overhead, the system SHALL support local semantic embedding generation and indexing with Qdrant.
 
