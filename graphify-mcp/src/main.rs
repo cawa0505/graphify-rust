@@ -2093,10 +2093,7 @@ mod tests {
                 "graphify_relay_init",
                 serde_json::json!({ "project_context": "x" }),
             ),
-            (
-                "graphify_relay_save",
-                serde_json::json!({ "repo": "Foo" }),
-            ),
+            ("graphify_relay_save", serde_json::json!({ "repo": "Foo" })),
             // 相對路徑視同未傳（absolute 必填）。
             (
                 "graphify_relay_status",
@@ -2105,7 +2102,7 @@ mod tests {
         ] {
             let err = run_relay_tool(tool, &args, &mut plugin)
                 .err()
-                .expect("missing/relative path must fail loud");
+                .ok_or_else(|| anyhow::anyhow!("missing/relative path must fail loud"))?;
             assert!(
                 err.to_string().starts_with("workspace context required"),
                 "{tool}: {err}"
@@ -2113,14 +2110,137 @@ mod tests {
         }
         // 零檔案寫入：目錄內只有注入的 registry db 檔名預期，不得出現 relay 產物。
         let entries: Vec<String> = fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            !entries.iter().any(|n| n == "relay.json" || n == ".relay" || n == "specs"),
+            !entries
+                .iter()
+                .any(|n| n == "relay.json" || n == ".relay" || n == "specs"),
             "凍結錯誤不得寫入任何 relay 產物: {entries:?}"
         );
         fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// Builds a two-workspace compose fixture (graph.toon each) and returns
+    /// the fixture dir plus the manifest's absolute path.
+    fn compose_fixture() -> anyhow::Result<(tempfile::TempDir, std::path::PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        for (id, node) in [("ws-a", "src/main.rs"), ("ws-b", "lib.rs")] {
+            let graph = graphify_core::GraphOutput {
+                nodes: vec![graphify_core::Node {
+                    id: graphify_core::NodeId(node.to_string()),
+                    label: node.to_string(),
+                    file_type: graphify_core::FileType::Code,
+                    kind: "function".to_string(),
+                    language: "rust".to_string(),
+                    source_file: node.to_string(),
+                    start_line: 1,
+                    end_line: 2,
+                    doc_comment: None,
+                    description: None,
+                    metadata: None,
+                }],
+                edges: vec![],
+                metadata: graphify_core::GraphMetadata::default(),
+            };
+            let out = dir.path().join(id).join("graphify-out");
+            fs::create_dir_all(&out)?;
+            fs::write(out.join("graph.toon"), graphify_core::to_toon(&graph))?;
+        }
+        let manifest = dir.path().join("assembly.yaml");
+        fs::write(
+            &manifest,
+            "workspaces:\n  - id: ws-a\n    path: ws-a\n  - id: ws-b\n    path: ws-b\nrelations:\n  - from: ws-a\n    type: uses\n    to: ws-b\n",
+        )?;
+        let manifest_path = dir.path().join("assembly.yaml");
+        Ok((dir, manifest_path))
+    }
+
+    /// spec mcp-server「Reading an existing manifest」：read 回傳 workspace
+    /// 與 relation 結構。
+    #[test]
+    fn test_compose_read_reports_structure() -> Result<()> {
+        let (dir, manifest) = compose_fixture()?;
+        let out = run_compose_tool(
+            "graphify_compose_read",
+            &serde_json::json!({ "manifest": manifest.display().to_string() }),
+        )?;
+        assert!(out.contains("workspaces 2 個, relations 1 條"), "{out}");
+        assert!(out.contains("ws-a --[uses]--> ws-b"), "{out}");
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec mcp-server「Agent writes a valid semantic relation」：write 成功
+    /// 且寫入的內容可再 read。
+    #[test]
+    fn test_compose_write_valid_relation() -> Result<()> {
+        let (dir, manifest) = compose_fixture()?;
+        let yaml = "workspaces:\n  - id: ws-a\n    path: ws-a\n  - id: ws-b\n    path: ws-b\nrelations:\n  - from: ws-a\n    type: audits\n    to: ws-b\n";
+        let out = run_compose_tool(
+            "graphify_compose_write",
+            &serde_json::json!({ "manifest": manifest.display().to_string(), "content": yaml }),
+        )?;
+        assert!(out.contains("manifest written and validated"), "{out}");
+        let read_out = run_compose_tool(
+            "graphify_compose_read",
+            &serde_json::json!({ "manifest": manifest.display().to_string() }),
+        )?;
+        assert!(read_out.contains("audits"), "{read_out}");
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec mcp-server「Agent writes an invalid relation」：驗證失敗 → 錯誤，
+    /// manifest 位元組不變。
+    #[test]
+    fn test_compose_write_invalid_keeps_bytes() -> Result<()> {
+        let (dir, manifest) = compose_fixture()?;
+        let before = fs::read(&manifest)?;
+        let yaml = "workspaces:\n  - id: ws-a\n    path: ws-a\nrelations:\n  - from: ws-a\n    type: uses\n    to: ws-x\n";
+        let err = run_compose_tool(
+            "graphify_compose_write",
+            &serde_json::json!({ "manifest": manifest.display().to_string(), "content": yaml }),
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("invalid relation must be rejected"))?;
+        assert!(err.to_string().contains("原檔未變動"), "{err}");
+        assert_eq!(fs::read(&manifest)?, before);
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec mcp-server「MCP 觸發渲染 / architecture diagram」前半：投影 JSON
+    /// 形狀（容器 box、成員葉 box、跨域 connection）。npx 實跑歸 6.1 e2e。
+    #[test]
+    fn test_compose_render_projection_shape() -> Result<()> {
+        let (dir, manifest) = compose_fixture()?;
+        let loaded = graphify_core::compose_manifest::load_manifest(&manifest)?;
+        let unified = graphify_core::compose_merge::build_unified_graph(&loaded)?;
+        let projection = graphify_core::compose_render::project(&unified);
+        let boxes = projection["children"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("projection children missing"))?;
+        assert_eq!(boxes.len(), 2);
+        let ws_a = boxes
+            .iter()
+            .find(|b| b["id"] == "ws-a")
+            .ok_or_else(|| anyhow::anyhow!("ws-a box missing"))?;
+        assert_eq!(
+            ws_a["children"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("ws-a children missing"))?
+                .len(),
+            1
+        );
+        let conns = projection["connections"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("projection connections missing"))?;
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0]["label"], "uses");
+        let _ = dir.close();
         Ok(())
     }
 }

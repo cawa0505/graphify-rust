@@ -243,6 +243,136 @@ pub fn write_manifest_atomic(manifest_path: &Path, content: &str) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Edge, FileType, Node};
+    use anyhow::Result;
+
+    fn fixture_ws(root: &Path, id: &str, node: &str) -> Result<()> {
+        let dir = root.join(id).join("graphify-out");
+        std::fs::create_dir_all(&dir)?;
+        let graph = GraphOutput {
+            nodes: vec![Node {
+                id: NodeId(node.to_string()),
+                label: node.to_string(),
+                file_type: FileType::Code,
+                kind: "function".to_string(),
+                language: "rust".to_string(),
+                source_file: node.to_string(),
+                start_line: 1,
+                end_line: 2,
+                doc_comment: None,
+                description: None,
+                metadata: None,
+            }],
+            edges: vec![Edge {
+                source: NodeId(node.to_string()),
+                target: NodeId(node.to_string()),
+                relation: "calls".to_string(),
+                source_file: node.to_string(),
+                confidence: "EXTRACTED".to_string(),
+                source_location: String::new(),
+                description: None,
+            }],
+            metadata: crate::GraphMetadata::default(),
+        };
+        std::fs::write(dir.join("graph.toon"), crate::to_toon(&graph))?;
+        Ok(())
+    }
+
+    fn write_manifest(dir: &Path, yaml: &str) -> Result<PathBuf> {
+        let p = dir.join("assembly.yaml");
+        std::fs::write(&p, yaml)?;
+        Ok(p)
+    }
+
+    const TWO_WS_YAML: &str = "workspaces:\n  - id: ws-a\n    path: ws-a\n  - id: ws-b\n    path: ws-b\nrelations:\n  - from: ws-a\n    type: uses\n    to: ws-b\n";
+
+    /// spec「解析最小 manifest」：合法 manifest 載入成功、roots 解析齊全。
+    #[test]
+    fn test_load_manifest_minimal_ok() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        fixture_ws(dir.path(), "ws-b", "lib.rs")?;
+        let loaded = load_manifest(&write_manifest(dir.path(), TWO_WS_YAML)?)?;
+        assert_eq!(loaded.roots.len(), 2);
+        assert_eq!(loaded.manifest.relations[0].relation, "uses");
+        assert!(loaded.root_of("ws-a").is_some());
+        Ok(())
+    }
+
+    /// spec「workspace 路徑不存在」：錯誤須指名 workspace 與路徑，不得靜默。
+    #[test]
+    fn test_load_manifest_missing_workspace_path_rejected() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        let p = write_manifest(dir.path(), TWO_WS_YAML)?;
+        let err = load_manifest(&p)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected rejection"))?;
+        let msg = err.to_string();
+        assert!(msg.contains("ws-b"), "{msg}");
+        assert!(msg.contains("graphify-out"), "{msg}");
+        Ok(())
+    }
+
+    /// spec「relation 引用未宣告的 workspace」：端點未宣告 → 驗證失敗。
+    #[test]
+    fn test_load_manifest_unknown_relation_workspace_rejected() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        let yaml = "workspaces:\n  - id: ws-a\n    path: ws-a\nrelations:\n  - from: ws-a\n    type: uses\n    to: ws-x\n";
+        let p = write_manifest(dir.path(), yaml)?;
+        let err = load_manifest(&p)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected rejection"))?;
+        assert!(err.to_string().contains("ws-x"), "{}", err);
+        Ok(())
+    }
+
+    /// spec「節點引用不存在」：`ws::node` 指向 graph 中不存在的節點 → 驗證失敗。
+    #[test]
+    fn test_load_manifest_missing_node_reference_rejected() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        fixture_ws(dir.path(), "ws-b", "lib.rs")?;
+        let yaml = "workspaces:\n  - id: ws-a\n    path: ws-a\n  - id: ws-b\n    path: ws-b\nrelations:\n  - from: ws-a::no_such_node\n    type: uses\n    to: ws-b\n";
+        let p = write_manifest(dir.path(), yaml)?;
+        let err = load_manifest(&p)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected rejection"))?;
+        let msg = err.to_string();
+        assert!(msg.contains("no_such_node"), "{msg}");
+        Ok(())
+    }
+
+    /// spec「AI 撰寫新關聯」：合法內容原子寫入成功且可再載入。
+    #[test]
+    fn test_write_manifest_atomic_valid_write() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        fixture_ws(dir.path(), "ws-b", "lib.rs")?;
+        let path = dir.path().join("assembly.yaml");
+        write_manifest_atomic(&path, TWO_WS_YAML)?;
+        assert!(load_manifest(&path).is_ok());
+        Ok(())
+    }
+
+    /// spec「AI 撰寫無效關聯被拒」：驗證失敗時原檔位元組不變。
+    #[test]
+    fn test_write_manifest_atomic_invalid_keeps_bytes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fixture_ws(dir.path(), "ws-a", "src/main.rs")?;
+        let path = write_manifest(dir.path(), "workspaces:\n  - id: ws-a\n    path: ws-a\n")?;
+        let before = std::fs::read(&path)?;
+        let bad = "workspaces:\n  - id: ws-a\n    path: ws-a\nrelations:\n  - from: ws-a\n    type: uses\n    to: ws-x\n";
+        let err = write_manifest_atomic(&path, bad)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected rejection"))?;
+        assert!(err.to_string().contains("原檔未變動"), "{}", err);
+        assert_eq!(std::fs::read(&path)?, before);
+        // 暫存檔不得殘留。
+        assert!(!path.with_extension("yaml.tmp").exists());
+        Ok(())
+    }
 
     #[test]
     fn test_load_toon_or_json_missing_graphs() {

@@ -165,6 +165,8 @@ pub fn is_compose_marker(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::types::GraphOutput;
+    use anyhow::Result;
+    use std::path::PathBuf;
 
     fn test_graph(node_local_id: &str) -> GraphOutput {
         GraphOutput {
@@ -291,5 +293,84 @@ mod tests {
         };
         assert_eq!(workspace_node_count(&unified, "ws-a"), 1);
         assert_eq!(workspace_node_count(&unified, "ws-b"), 0);
+    }
+
+    /// spec「合併兩個 workspace」：節點以 `ws::local` 前綴合併、container
+    /// 節點齊全、`workspace_count` 正確。
+    #[test]
+    fn test_merge_two_workspaces_prefixes_and_containers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for (id, node) in [("ws-a", "src/main.rs"), ("ws-b", "lib.rs")] {
+            let out = dir.path().join(id).join("graphify-out");
+            std::fs::create_dir_all(&out)?;
+            std::fs::write(out.join("graph.toon"), crate::to_toon(&test_graph(node)))?;
+        }
+        let loaded = LoadedManifest {
+            manifest: crate::manifest::AssemblyManifest {
+                workspaces: vec![
+                    crate::manifest::WorkspaceEntry {
+                        id: "ws-a".to_string(),
+                        path: "ws-a".to_string(),
+                    },
+                    crate::manifest::WorkspaceEntry {
+                        id: "ws-b".to_string(),
+                        path: "ws-b".to_string(),
+                    },
+                ],
+                relations: vec![],
+            },
+            roots: vec![
+                ("ws-a".to_string(), dir.path().join("ws-a")),
+                ("ws-b".to_string(), dir.path().join("ws-b")),
+            ],
+            manifest_path: PathBuf::from("assembly.yaml"),
+        };
+        let unified = build_unified_graph(&loaded)?;
+        assert_eq!(unified.workspace_count, 2);
+        assert_eq!(unified.nodes.len(), 4); // 2 containers + 2 members
+        assert!(unified.nodes.iter().any(|n| n.id.0 == "ws-a::src/main.rs"));
+        assert!(unified.nodes.iter().any(|n| n.id.0 == "ws-b::lib.rs"));
+        Ok(())
+    }
+
+    /// spec「跨 workspace 節點撞名」：同名 local id 來自不同 workspace →
+    /// 前綴去重，不得衝突報錯。
+    #[test]
+    fn test_merge_same_local_id_across_workspaces_deduped() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for id in ["ws-a", "ws-b"] {
+            let out = dir.path().join(id).join("graphify-out");
+            std::fs::create_dir_all(&out)?;
+            // 兩個 workspace 有同名 local 節點 `lib.rs`。
+            std::fs::write(
+                out.join("graph.toon"),
+                crate::to_toon(&test_graph("lib.rs")),
+            )?;
+        }
+        let loaded = LoadedManifest {
+            manifest: crate::manifest::AssemblyManifest {
+                workspaces: vec![
+                    crate::manifest::WorkspaceEntry {
+                        id: "ws-a".to_string(),
+                        path: "ws-a".to_string(),
+                    },
+                    crate::manifest::WorkspaceEntry {
+                        id: "ws-b".to_string(),
+                        path: "ws-b".to_string(),
+                    },
+                ],
+                relations: vec![],
+            },
+            roots: vec![
+                ("ws-a".to_string(), dir.path().join("ws-a")),
+                ("ws-b".to_string(), dir.path().join("ws-b")),
+            ],
+            manifest_path: PathBuf::from("assembly.yaml"),
+        };
+        let unified = build_unified_graph(&loaded)?;
+        assert_eq!(unified.nodes.len(), 4); // 2 containers + 2 prefixed members
+        assert!(unified.nodes.iter().any(|n| n.id.0 == "ws-a::lib.rs"));
+        assert!(unified.nodes.iter().any(|n| n.id.0 == "ws-b::lib.rs"));
+        Ok(())
     }
 }
