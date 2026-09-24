@@ -42,11 +42,25 @@
 
 ### Requirement: repo 路徑寫入時驗證
 
-`relay_save`/`relay_close` 寫入前 SHALL 把 repo 參數解析為實際目錄：絕對路徑 → root 相對 → caller path 相對；全部失敗 → fail-loud 拒寫，錯誤訊息 SHALL 列出嘗試路徑（`repo path could not be resolved. Tried: ...`）。解析基準 SHALL 為 caller workspace（root 與 caller path），SHALL NOT 以 server process cwd 為解析基準。錯誤訊息中的 Tried 候選 SHALL 去重（同一候選路徑 SHALL NOT 重複列出；重複列出即代表解析退回 cwd 同源，為回歸信號）。preserved：root 外的絕對路徑明確表態 → 允許；monorepo 子目錄不誤殺（同名目錄存在即合法）。候選僅需為存在的目錄（repo 是否為 git repo 不影響寫入驗收，僅影響渲染時的 git 狀態診斷）。解析成功時 `RepoState.path` SHALL 儲存絕對路徑，不得以裸 repo 名稱作為路徑預設值。
+`relay_save`/`relay_close` 寫入前 SHALL 把 repo 參數解析為實際目錄：絕對路徑 → 裸名先回查 relay state 已註冊的同名 repo 路徑 → root 相對 → caller path 相對；全部失敗 → fail-loud 拒寫，錯誤訊息 SHALL 列出嘗試路徑（`repo path could not be resolved. Tried: ...`）。已註冊回查 SHALL 僅採用解析後目錄仍存在者：未註冊或已註冊路徑失效 SHALL 回退後續層。解析基準 SHALL 為 caller workspace（root 與 caller path），SHALL NOT 以 server process cwd 為解析基準。錯誤訊息中的 Tried 候選 SHALL 去重（同一候選路徑 SHALL NOT 重複列出；重複列出即代表解析退回 cwd 同源，為回歸信號）。preserved：root 外的絕對路徑明確表態 → 允許；monorepo 子目錄不誤殺（同名目錄存在即合法）。候選僅需為存在的目錄（repo 是否為 git repo 不影響寫入驗收，僅影響渲染時的 git 狀態診斷）。解析成功時 `RepoState.path` SHALL 儲存絕對路徑，不得以裸 repo 名稱作為路徑預設值。
+
+#### Scenario: 裸名回查已註冊 repo 命中
+
+- **GIVEN** state 已註冊 repo "NexusHub"（`path` 為絕對路徑且目錄存在），root 下無同名子目錄
+- **WHEN** 呼叫 `relay_save(repo="NexusHub", ...)`
+- **THEN** 解析命中已註冊路徑，寫入成功
+- **AND** `RepoState.path` 為該已註冊絕對路徑
+
+#### Scenario: 已註冊路徑失效時回退既有解析
+
+- **GIVEN** state 已註冊 repo "Foo" 但其 `path` 目錄已不存在，root 下亦無 `root/Foo`
+- **WHEN** 呼叫 `relay_save(repo="Foo", ...)`
+- **THEN** 回退既有三層解析並 fail-loud 拒寫，錯誤訊息列出嘗試路徑
+- **AND** 狀態檔不寫入失效的已註冊路徑
 
 #### Scenario: 路徑無法解析時拒絕寫入
 
-- **GIVEN** repo 名 "Foo" 在 root 下與 caller path 下皆無對應目錄
+- **GIVEN** repo 名 "Foo" 在 root 下與 caller path 下皆無對應目錄，且 state 未註冊同名 repo
 - **WHEN** 呼叫 `relay_save(repo="Foo", ...)`
 - **THEN** 寫入被拒絕，狀態檔位元組不變
 - **AND** 錯誤訊息包含所有嘗試過的路徑
