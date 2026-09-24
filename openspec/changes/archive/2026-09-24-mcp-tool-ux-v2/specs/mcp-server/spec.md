@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Tool naming convention
 
@@ -54,6 +54,7 @@ The old tool names SHALL be removed. Backward compatibility SHALL NOT be maintai
 
 - **WHEN** an agent invokes `graphify_graphify_query`
 - **THEN** the server SHALL return a tool-not-found error
+
 
 ### Requirement: Coverage tool domain
 

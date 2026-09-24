@@ -56,11 +56,22 @@ The hook MUST accept the graph update event and MUST NOT break existing plugin i
 
 ### Requirement: Update broadcast after graph rebuild
 
-The system MUST broadcast a graph update event to all bound plugins after a successful index or extract run completes.
+**FROM:** The system MUST broadcast a graph update event to all bound plugins after a successful index or extract run completes.
+
+**TO:** The system MUST broadcast a graph update event to all bound plugins automatically after every successful index, extract, or reindex run completes. No manual trigger SHALL be required for the broadcast to reach plugins in these normal workflows.
 
 #### Scenario: All bound plugins notified after index
 - **WHEN** an index run completes successfully and multiple plugins are bound
 - **THEN** every bound plugin receives the graph update event
+
+#### Scenario: Reindex also triggers broadcast
+- **WHEN** a reindex (single file) completes successfully
+- **THEN** every bound plugin receives the graph update event with trigger kind `manual`
+
+#### Scenario: No manual notify needed after index
+- **WHEN** an index run completes successfully
+- **THEN** the broadcast SHALL fire automatically
+- **AND** no explicit `notify_plugins` call SHALL be required
 
 #### Scenario: Failed run emits no event
 - **WHEN** an index or extract run fails
@@ -68,9 +79,9 @@ The system MUST broadcast a graph update event to all bound plugins after a succ
 
 ### Requirement: Manual hook trigger command
 
-The system MUST provide a CLI command that manually triggers the plugin hooks with a `manual` event.
+**FROM:** The system MUST provide a CLI command that manually triggers the plugin hooks with a `manual` event.
 
-The command MUST succeed (exit code 0) when no plugins are bound, emitting no events, and MUST propagate a clear error if hook execution fails.
+**TO:** The system MUST retain the manual hook trigger command as a manual override for cases where automatic broadcast is insufficient (e.g., after external graph file modifications).
 
 #### Scenario: Manual trigger with bound plugins
 - **WHEN** a user runs the manual hook trigger command while plugins are bound
