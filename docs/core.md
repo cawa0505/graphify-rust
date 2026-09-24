@@ -81,7 +81,7 @@ independent MCP servers and are hosted by `graphify-mcp` when the unified
 gateway mode is enabled. The gateway reads `[plugins.<id>]` declarations,
 performs the MCP initialize handshake over stdio, aggregates tools under the
 `graphify_plugin_<plugin_id>_<tool_name>` namespace, and forwards calls. After
-`graph_reindex` or `graphify_notify_plugins`, it sends a
+`graphify_graph_reindex` or `graphify_plugin_notify`, it sends a
 `notifications/graph_updated` notification containing `kind` and
 `workspace_key`.
 

@@ -116,7 +116,7 @@ Plugin 之間或對外曝露給 AI Agent 的 MCP 工具必須符合以下雙重�
 - **掃描來源**：`~/.config/graphify/config.toml` 的 `[plugins.<id>]` 段（`command` 必填、`args`/`env`/`cwd` 選用）。缺檔或無該段時為空容器，不阻擋 server 啟動（故障隔離）。
 - **進程模型**：啟動時 spawn，JSON-RPC 2.0 over stdio，`Content-Length` framing；`initialize` 握手失敗或逾時的 plugin 標記為 `Failed`，不影響其他 plugin（單一 plugin 失敗隔離）。
 - **工具命名**：聚合工具以 `graphify_plugin_<plugin_id>_<tool_name>` 三段前綴避免命名衝突；`tools/call` 依此前綴路由回對應子進程。
-- **圖更新通知**：`graph_reindex` 工具成功完成後，向所有 `Ready` plugin 子進程廣播 `notifications/graph_updated`（JSON-RPC notification，無回應預期）。
+- **圖更新通知**：`graphify_graph_reindex` 工具成功完成後，向所有 `Ready` plugin 子進程廣播 `notifications/graph_updated`（JSON-RPC notification，無回應預期）。
 - **既有工具不變**：內建 `graphify_*` 工具維持原行為，plugin 聚合僅為增量。
 
 ### 3.5 Plugin-Domain Memory 邊界（memory-plugin-integration-v1）
