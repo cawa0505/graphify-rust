@@ -27,6 +27,10 @@ graphify-plugin-skeleton = { path = "../../GraphifyPlugins/graphify-plugin-skele
 
 # Async / IO
 tokio = { version = "1.0", features = ["full"] }
+# relay-remote-transport D1：streamable HTTP transport（axum 0.8，lockfile 既有）
+axum = "0.8"
+# BroadcastStream（SSE 事件流）需要 sync feature
+tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -36,6 +40,8 @@ serde_yaml_ng = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3"
+# e2e：Router::oneshot（tower ServiceExt）
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

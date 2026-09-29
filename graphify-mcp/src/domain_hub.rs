@@ -18,66 +18,191 @@ const DOMAINS: &[Domain] = &[
         tool: "graphify_graph",
         desc: "Knowledge graph core operations: BFS query, topology summary, shortest path, node probe, file reindex, AST skeleton, workspace status, semantic memory query",
         actions: &[
-            ("query", "graphify_graph_query", "BFS traversal of the knowledge graph (params: question)"),
-            ("summary", "graphify_graph_summary", "High-level topology summary (no params)"),
-            ("reindex", "graphify_graph_reindex", "Reindex a file into the graph (params: file_path)"),
-            ("path", "graphify_graph_path", "Shortest path between two nodes (params: source, target)"),
-            ("query_node", "graphify_graph_query_node", "Query nodes by ID with depth (params: node_id, depth)"),
-            ("skeleton", "graphify_skeleton_extract", "Extract compact AST skeleton from a source file (params: path)"),
-            ("workspace", "graphify_workspace_status", "Active workspace key, root path, registration status (no params)"),
-            ("memory", "graphify_memory_query", "Semantic memory query (params: query, workspace_key, limit)"),
+            (
+                "query",
+                "graphify_graph_query",
+                "BFS traversal of the knowledge graph (params: question)",
+            ),
+            (
+                "summary",
+                "graphify_graph_summary",
+                "High-level topology summary (no params)",
+            ),
+            (
+                "reindex",
+                "graphify_graph_reindex",
+                "Reindex a file into the graph (params: file_path)",
+            ),
+            (
+                "path",
+                "graphify_graph_path",
+                "Shortest path between two nodes (params: source, target)",
+            ),
+            (
+                "query_node",
+                "graphify_graph_query_node",
+                "Query nodes by ID with depth (params: node_id, depth)",
+            ),
+            (
+                "skeleton",
+                "graphify_skeleton_extract",
+                "Extract compact AST skeleton from a source file (params: path)",
+            ),
+            (
+                "workspace",
+                "graphify_workspace_status",
+                "Active workspace key, root path, registration status (no params)",
+            ),
+            (
+                "memory",
+                "graphify_memory_query",
+                "Semantic memory query (params: query, workspace_key, limit)",
+            ),
+            (
+                "snapshot",
+                "graphify_graph_snapshot",
+                "Full loaded graph as TOON snapshot (no params; TUI --remote data source)",
+            ),
         ],
     },
     Domain {
         tool: "graphify_relay",
         desc: "Code Relay cross-session / cross-repo state handoff management",
         actions: &[
-            ("status", "graphify_relay_status", "Show relay summary: repos, active baton, spec drift (params: path)"),
-            ("init", "graphify_relay_init", "Initialize relay.json (params: path, project_context, kind)"),
-            ("save", "graphify_relay_save", "Save volatile state, phase, confidence, next-step (params: path, repo, phase, conf, next, volatile, ...)"),
-            ("close", "graphify_relay_close", "Auto-save + closing ritual (params: path, repo, next, ...)"),
-            ("switch", "graphify_relay_switch", "Pass the baton to another repo (params: path, repo, kind)"),
-            ("resume", "graphify_relay_resume", "Render RESUME handover (params: path, repo, kind)"),
-            ("add", "graphify_relay_add", "Ingest an old TODO/handoff doc (params: path, file, repo)"),
+            (
+                "status",
+                "graphify_relay_status",
+                "Show relay summary: repos, active baton, spec drift (params: path)",
+            ),
+            (
+                "init",
+                "graphify_relay_init",
+                "Initialize relay.json (params: path, project_context, kind)",
+            ),
+            (
+                "save",
+                "graphify_relay_save",
+                "Save volatile state, phase, confidence, next-step (params: path, repo, phase, conf, next, volatile, ...)",
+            ),
+            (
+                "close",
+                "graphify_relay_close",
+                "Auto-save + closing ritual (params: path, repo, next, ...)",
+            ),
+            (
+                "switch",
+                "graphify_relay_switch",
+                "Pass the baton to another repo (params: path, repo, kind)",
+            ),
+            (
+                "resume",
+                "graphify_relay_resume",
+                "Render RESUME handover (params: path, repo, kind)",
+            ),
+            (
+                "add",
+                "graphify_relay_add",
+                "Ingest an old TODO/handoff doc (params: path, file, repo)",
+            ),
         ],
     },
     Domain {
         tool: "graphify_opendoc",
         desc: "Spec ↔ symbol binding and doc-drift audit (OpenDoc Layer 1)",
         actions: &[
-            ("get_context", "graphify_opendoc_get_context", "Spec blocks documenting a code symbol (params: symbol)"),
-            ("index", "graphify_opendoc_index", "Index .md spec blocks in the workspace (params: doc_paths[])"),
-            ("audit_drift", "graphify_opendoc_audit_drift", "Audit doc-side drift per indexed link (no params)"),
+            (
+                "get_context",
+                "graphify_opendoc_get_context",
+                "Spec blocks documenting a code symbol (params: symbol)",
+            ),
+            (
+                "index",
+                "graphify_opendoc_index",
+                "Index .md spec blocks in the workspace (params: doc_paths[])",
+            ),
+            (
+                "audit_drift",
+                "graphify_opendoc_audit_drift",
+                "Audit doc-side drift per indexed link (no params)",
+            ),
         ],
     },
     Domain {
         tool: "graphify_review",
         desc: "Code review points bound to graph nodes (code-review-graph bridge)",
         actions: &[
-            ("get_context", "graphify_review_get_context", "Unresolved reviews for a canonical node id (params: node)"),
-            ("ingest", "graphify_review_ingest", "Import a CRG IngestPayload JSON file (params: payload)"),
-            ("resolve", "graphify_review_resolve", "Mark a review resolved (params: review_id, reason)"),
-            ("search_crg", "graphify_review_search_crg", "Bind CRG top-risk changed functions as review points (params: base)"),
+            (
+                "get_context",
+                "graphify_review_get_context",
+                "Unresolved reviews for a canonical node id (params: node)",
+            ),
+            (
+                "ingest",
+                "graphify_review_ingest",
+                "Import a CRG IngestPayload JSON file (params: payload)",
+            ),
+            (
+                "resolve",
+                "graphify_review_resolve",
+                "Mark a review resolved (params: review_id, reason)",
+            ),
+            (
+                "search_crg",
+                "graphify_review_search_crg",
+                "Bind CRG top-risk changed functions as review points (params: base)",
+            ),
         ],
     },
     Domain {
         tool: "graphify_metrics",
         desc: "Telemetry and test-coverage metrics bound to graph nodes",
         actions: &[
-            ("coverage_ingest", "graphify_coverage_ingest", "Import LCOV/cobertura coverage text (params: format, data)"),
-            ("coverage_get", "graphify_coverage_get_context", "Coverage bindings for a node (params: node)"),
-            ("coverage_blindspots", "graphify_coverage_blindspots", "List nodes with <50% coverage (no params)"),
-            ("telemetry_ingest", "graphify_telemetry_ingest", "Import telemetry metrics (params: source, path_or_draco_params)"),
-            ("telemetry_get", "graphify_telemetry_get_context", "Telemetry bindings for a node (params: node, include_impact_radius)"),
+            (
+                "coverage_ingest",
+                "graphify_coverage_ingest",
+                "Import LCOV/cobertura coverage text (params: format, data)",
+            ),
+            (
+                "coverage_get",
+                "graphify_coverage_get_context",
+                "Coverage bindings for a node (params: node)",
+            ),
+            (
+                "coverage_blindspots",
+                "graphify_coverage_blindspots",
+                "List nodes with <50% coverage (no params)",
+            ),
+            (
+                "telemetry_ingest",
+                "graphify_telemetry_ingest",
+                "Import telemetry metrics (params: source, path_or_draco_params)",
+            ),
+            (
+                "telemetry_get",
+                "graphify_telemetry_get_context",
+                "Telemetry bindings for a node (params: node, include_impact_radius)",
+            ),
         ],
     },
     Domain {
         tool: "graphify_compose",
         desc: "Cross-workspace architecture composition (Assembly Manifest)",
         actions: &[
-            ("read", "graphify_compose_read", "Read and validate an Assembly Manifest (params: manifest)"),
-            ("write", "graphify_compose_write", "Atomically write a validated manifest (params: manifest, content)"),
-            ("render", "graphify_compose_render", "Render the unified graph as ASCII/SVG (params: manifest, svg)"),
+            (
+                "read",
+                "graphify_compose_read",
+                "Read and validate an Assembly Manifest (params: manifest)",
+            ),
+            (
+                "write",
+                "graphify_compose_write",
+                "Atomically write a validated manifest (params: manifest, content)",
+            ),
+            (
+                "render",
+                "graphify_compose_render",
+                "Render the unified graph as ASCII/SVG (params: manifest, svg)",
+            ),
         ],
     },
 ];
@@ -135,7 +260,12 @@ pub fn resolve_hub_call(
         .ok_or_else(|| {
             format!(
                 "missing 'action' for {tool_name}; valid actions: {}",
-                domain.actions.iter().map(|(a, _, _)| *a).collect::<Vec<_>>().join(", ")
+                domain
+                    .actions
+                    .iter()
+                    .map(|(a, _, _)| *a)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
     let (_, legacy, _) = domain
@@ -145,7 +275,12 @@ pub fn resolve_hub_call(
         .ok_or_else(|| {
             format!(
                 "unknown action '{action}' for {tool_name}; valid actions: {}",
-                domain.actions.iter().map(|(a, _, _)| *a).collect::<Vec<_>>().join(", ")
+                domain
+                    .actions
+                    .iter()
+                    .map(|(a, _, _)| *a)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
     // Flatten: action-specific params may arrive nested under "params" or

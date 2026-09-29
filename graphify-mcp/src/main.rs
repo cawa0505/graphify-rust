@@ -8,9 +8,10 @@
 mod domain_hub;
 mod memory_query;
 mod plugin_host;
+mod server;
 mod types;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use graphify_core::extract::extract_file;
 use graphify_core::graph::build_graph;
 use graphify_core::graph::path::find_shortest_path;
@@ -32,10 +33,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::oneshot;
 use types::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, PathParams, QueryNodeParams, QueryParams,
     ReindexParams, TracePathParams,
@@ -133,7 +135,7 @@ impl GraphState {
 }
 
 fn main() -> Result<()> {
-    eprintln!("graphify-mcp: MCP server starting on stdio");
+    let listen = parse_listen()?;
 
     // A stale or corrupt graph file must not kill the server at startup;
     // degrade to an empty graph so tools keep responding with honest
@@ -176,16 +178,17 @@ fn main() -> Result<()> {
     }));
 
     // Embedded handoff relay plugin: bound once to the server cwd (root
-    // walk-up per PROTOCOL.md); relay* tools answer honestly with a NoRoot
-    // error when no relay.json exists, mirroring the legacy plugin behavior.
+    // walk-up per PROTOCOL.md); relay* tools re-bind per-call to the caller's
+    // workspace `path` (relay-workspace-context D1/D2) and answer honestly
+    // with a stratified root error when binding is impossible (Task 1, D4).
     let relay = Rc::new(RefCell::new(build_relay_plugin()));
     // Embedded opendoc plugin: same bind-once / global-registry pattern as
     // relay; opendoc* tools degrade to empty results when Layer 2 is absent.
     let opendoc = Rc::new(RefCell::new(build_opendoc_plugin()));
     // Embedded review plugin: code-review-graph bridge (file-based ingest,
     // line→symbol binding in graphify.db); review* tools are self-contained.
-    // Slice 2: notify buffer 收集 ImpactAlert，response 寫完後以
-    // notifications/review/impact_alert 轉發給 client（T2.3）。
+    // T2.3：notify buffer 收集 ImpactAlert，dispatcher 在回應後以
+    // notifications/review/impact_alert 推入 SSE broadcast（session 事件流）。
     let review_notify: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     let review = Rc::new(RefCell::new(build_review_plugin(Arc::clone(
         &review_notify,
@@ -197,59 +200,107 @@ fn main() -> Result<()> {
     // line→symbol binding in graphify.db); coverage* tools are self-contained.
     let coverage = Rc::new(RefCell::new(build_coverage_plugin()));
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    // ── HTTP transport（relay-remote-transport D1：streamable HTTP 唯一，
+    // stdio 啟動路徑已移除，binary 僅 serve）──
+    let (dispatch_tx, dispatch_rx) =
+        mpsc::channel::<(JsonRpcRequest, oneshot::Sender<JsonRpcResponse>)>();
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(64);
+    let notify_http = notify_tx.clone();
+    let token = std::env::var("GRAPHIFY_MCP_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.is_empty() {
+    // HTTP（axum + tokio runtime）在專用執行緒；dispatcher 留在 main 執行緒
+    // —— 內嵌 plugin 為 `!Send` 的 Rc 不能跨執行緒，stdio 時代語意原封不動：
+    // 循序處理、先回應後通知。
+    let http = std::thread::spawn(move || -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(server::serve(listen, dispatch_tx, notify_http, token))
+    });
+
+    // Dispatcher loop：原 stdio 迴圈，stdin 換成分派 channel。
+    while let Ok((request, resp_tx)) = dispatch_rx.recv() {
+        let is_notification = request.id.is_none();
+        let response = handle_request(
+            request,
+            Arc::clone(&state),
+            Rc::clone(&plugin_host),
+            Rc::clone(&memory_query),
+            Rc::clone(&relay),
+            Rc::clone(&opendoc),
+            Rc::clone(&review),
+            Rc::clone(&telemetry),
+            Rc::clone(&coverage),
+        );
+        // MCP spec：notification 不攜帶回應本體；HTTP 層見 id=None 自行回
+        // 202。這裡一律回覆以保持 oneshot 對齊（receiver 不可懸空）。
+        let _ = resp_tx.send(response);
+        if is_notification {
             continue;
         }
-
-        match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(request) => {
-                // MCP spec: notifications (no id) must never receive a
-                // response. Skipping them keeps the stdio stream aligned
-                // with the client's pending-request bookkeeping.
-                let is_notification = request.id.is_none();
-                let response = handle_request(
-                    request,
-                    Arc::clone(&state),
-                    Rc::clone(&plugin_host),
-                    Rc::clone(&memory_query),
-                    Rc::clone(&relay),
-                    Rc::clone(&opendoc),
-                    Rc::clone(&review),
-                    Rc::clone(&telemetry),
-                    Rc::clone(&coverage),
-                );
-                if is_notification {
-                    continue;
-                }
-                let response_json = serde_json::to_string(&response)?;
-                writeln!(stdout, "{response_json}")?;
-                stdout.flush()?;
-                // Slice 2 T2.3：response 後再轉發 ImpactAlert notifications
-                // （先回應後通知，避免與 pending-request bookkeeping 交錯）。
-                if let Ok(mut buf) = review_notify.lock() {
-                    for alert in buf.drain(..) {
-                        let notif = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "method": "notifications/review/impact_alert",
-                            "params": alert,
-                        });
-                        writeln!(stdout, "{notif}")?;
-                    }
-                    stdout.flush()?;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to parse request: {e}");
-            }
-        }
+        // T2.3：response 後再轉發 ImpactAlert notifications（先回應後通知，
+        // 與 stdio 時代順序一致）；SSE 無訂閱者時事件丟棄。
+        drain_impact_alerts(&review_notify, &notify_tx);
     }
 
-    Ok(())
+    // transport 結束（serve 返回）即收尾；http 執行緒的錯誤必須浮現。
+    match http.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => bail!("http transport thread panicked"),
+    }
+}
+
+fn parse_listen() -> Result<std::net::SocketAddr> {
+    parse_listen_from(std::env::args().skip(1))
+}
+
+/// `graphify-mcp serve --listen <host>:<port>`（spec mcp-server：binary 僅
+/// serve，stdio 啟動路徑不存在）。預設 127.0.0.1:9899（fail-safe loopback；
+/// 部署以 --listen 指定內網介面，design D1）。
+fn parse_listen_from<I: Iterator<Item = String>>(mut args: I) -> Result<std::net::SocketAddr> {
+    match args.next().as_deref() {
+        Some("serve") => {}
+        other => bail!(
+            "usage: graphify-mcp serve --listen <host>:<port> (stdio MCP mode removed, got {other:?})"
+        ),
+    }
+    let mut listen: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--listen" => {
+                listen = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("--listen requires <host>:<port>"))?,
+                );
+            }
+            other => bail!(
+                "unknown argument: {other} (usage: graphify-mcp serve --listen <host>:<port>)"
+            ),
+        }
+    }
+    let listen = listen.unwrap_or_else(|| "127.0.0.1:9899".to_string());
+    listen
+        .parse()
+        .map_err(|e| anyhow!("invalid --listen {listen}: {e}"))
+}
+
+/// T2.3 drain：ImpactAlert buffer → SSE broadcast（envelope 於 dispatcher
+/// 端包裝；SSE 無訂閱者時事件丟棄，與 stdio 時代 best-effort 語意一致）。
+fn drain_impact_alerts(
+    buffer: &Arc<Mutex<Vec<serde_json::Value>>>,
+    notify_tx: &tokio::sync::broadcast::Sender<serde_json::Value>,
+) {
+    if let Ok(mut buf) = buffer.lock() {
+        for alert in buf.drain(..) {
+            let notif = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/review/impact_alert",
+                "params": alert,
+            });
+            let _ = notify_tx.send(notif);
+        }
+    }
 }
 
 /// Build the embedded handoff plugin: global registry DB injected so
@@ -441,6 +492,10 @@ fn handle_request(
                         "Find shortest path between two nodes (legacy compatibility)",
                     ),
                     ("graphify_graph_summary", "Get high-level topology summary"),
+                    (
+                        "graphify_graph_snapshot",
+                        "Full loaded graph as TOON snapshot (remote TUI data source)",
+                    ),
                     ("graphify_graph_query_node", "Query nodes by ID with depth"),
                     (
                         "graphify_graph_trace_path",
@@ -1482,6 +1537,19 @@ fn handle_tool_call(
     state_lock: Arc<RwLock<GraphState>>,
 ) -> Result<serde_json::Value> {
     match name {
+        "graphify_graph_snapshot" => {
+            // relay-remote-transport 2b：TUI --remote 資料來源——回傳 server
+            // 端載入圖譜的完整 .toon 快照（SSoT），client 以 from_toon 還原
+            // 後沿既有 TUI 語意渲染。content-blocks 包裝與 relay 臂同形
+            // （bare string 會被嚴格 client 丟棄，見 relay 臂註解）。
+            let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": graphify_core::to_toon(&r_state.graph_data)
+                }]
+            }))
+        }
         "graphify_graph_query" => {
             let params: QueryParams = serde_json::from_value(args)?;
             let r_state = state_lock.read().map_err(|_| anyhow!("RwLock poisoned"))?;
@@ -1651,6 +1719,7 @@ mod tests {
 
     use super::*;
     use std::io::Write;
+    use tower::ServiceExt; // Router::oneshot（HTTP e2e）
 
     #[test]
     fn test_load_failure_falls_back_to_empty_graph() -> Result<()> {
@@ -2039,7 +2108,8 @@ mod tests {
     // Task 4.2 (spec: mcp-workspace-context): workspace_status returns the
     // active workspace's key, root path, and registration status.
     #[test]
-    fn test_workspace_status_reports_active_workspace() -> Result<()> {        let tmp = tempfile::Builder::new()
+    fn test_workspace_status_reports_active_workspace() -> Result<()> {
+        let tmp = tempfile::Builder::new()
             .tempfile()?
             .into_temp_path()
             .keep()?;
@@ -2132,38 +2202,37 @@ mod tests {
             &workspace_key,
         )));
         let memory_query = Rc::new(RefCell::new(MemoryQueryService::new()?));
-        let relay = Rc::new(
-            RefCell::new(
-                RelayPlugin::new().with_registry_path(registry_path.clone()),
-            ),
-        );
-        let opendoc = Rc::new(
-            RefCell::new(
-                OpendocPlugin::new().with_registry_path(registry_path.clone()),
-            ),
-        );
-        let review = Rc::new(
-            RefCell::new(
-                ReviewPlugin::new()
-                    .with_registry_path(registry_path.clone())
-                    .bind_for_cli(dir.path()),
-            ),
-        );
-        let telemetry = Rc::new(
-            RefCell::new(
-                TelemetryPlugin::new().with_registry_path(registry_path.clone()),
-            ),
-        );
-        let coverage = Rc::new(
-            RefCell::new(CoveragePlugin::new().with_registry_path(registry_path)),
-        );
+        let relay = Rc::new(RefCell::new(
+            RelayPlugin::new().with_registry_path(registry_path.clone()),
+        ));
+        let opendoc = Rc::new(RefCell::new(
+            OpendocPlugin::new().with_registry_path(registry_path.clone()),
+        ));
+        let review = Rc::new(RefCell::new(
+            ReviewPlugin::new()
+                .with_registry_path(registry_path.clone())
+                .bind_for_cli(dir.path()),
+        ));
+        let telemetry = Rc::new(RefCell::new(
+            TelemetryPlugin::new().with_registry_path(registry_path.clone()),
+        ));
+        let coverage = Rc::new(RefCell::new(
+            CoveragePlugin::new().with_registry_path(registry_path),
+        ));
 
         if std::env::set_current_dir(&prev_cwd).is_err() {
             let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
         }
         Ok((
-            dir, state, plugin_host, memory_query, relay, opendoc, review,
-            telemetry, coverage,
+            dir,
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
         ))
     }
 
@@ -2257,7 +2326,10 @@ mod tests {
             init_resp.error
         );
         let response = handle_request(
-            hub_request("graphify_relay", serde_json::json!({ "action": "status", "path": ws })),
+            hub_request(
+                "graphify_relay",
+                serde_json::json!({ "action": "status", "path": ws }),
+            ),
             state,
             plugin_host,
             memory_query,
@@ -2415,7 +2487,10 @@ mod tests {
         let args = serde_json::json!({ "manifest": manifest.display().to_string() });
 
         let hub_resp = handle_request(
-            hub_request("graphify_compose", serde_json::json!({ "action": "read", "manifest": manifest.display().to_string() })),
+            hub_request(
+                "graphify_compose",
+                serde_json::json!({ "action": "read", "manifest": manifest.display().to_string() }),
+            ),
             Arc::clone(&state),
             Rc::clone(&plugin_host),
             Rc::clone(&memory_query),
@@ -2443,13 +2518,266 @@ mod tests {
         let legacy_text = legacy_resp
             .result
             .and_then(|r| r.pointer("/content/0/text").cloned())
-            .ok_or_else(|| anyhow::anyhow!("legacy compose read failed: {:?}", legacy_resp.error))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("legacy compose read failed: {:?}", legacy_resp.error)
+            })?;
         assert_eq!(hub_text, legacy_text, "hub and legacy must be equivalent");
         assert!(
             hub_text.as_str().is_some_and(|s| s.contains("manifest OK")),
             "{hub_text}"
         );
         let _ = dir.close();
+        Ok(())
+    }
+
+    // ── relay-remote-transport Task 2.4：HTTP mode e2e ───────────────────────
+
+    /// 建構保證：非 `serve` 子命令一律凍結錯誤——stdio 啟動路徑不存在
+    /// （binary 僅 serve，mcp-server spec）。
+    #[test]
+    fn test_parse_listen_requires_serve_subcommand() {
+        let msg = parse_listen_from(std::iter::empty::<String>())
+            .expect_err("bare invocation must be rejected")
+            .to_string();
+        assert!(msg.contains("stdio MCP mode removed"), "{msg}");
+        assert!(msg.contains("serve --listen"), "{msg}");
+
+        let msg = parse_listen_from(["--listen", "127.0.0.1:1"].into_iter().map(str::to_string))
+            .expect_err("serve subcommand is mandatory")
+            .to_string();
+        assert!(msg.contains("stdio MCP mode removed"), "{msg}");
+    }
+
+    /// serve 預設 loopback 9899（fail-safe）；--listen 覆蓋；未知參數與缺值
+    /// 皆錯誤。
+    #[test]
+    fn test_parse_listen_defaults_flag_and_rejections() {
+        let addr = parse_listen_from(std::iter::once("serve").map(str::to_string)).unwrap();
+        assert_eq!(addr.to_string(), "127.0.0.1:9899");
+
+        let addr = parse_listen_from(
+            ["serve", "--listen", "0.0.0.0:9443"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(addr.to_string(), "0.0.0.0:9443");
+
+        let msg = parse_listen_from(["serve", "--bogus"].into_iter().map(str::to_string))
+            .expect_err("unknown args must be rejected")
+            .to_string();
+        assert!(msg.contains("unknown argument: --bogus"), "{msg}");
+
+        let msg = parse_listen_from(["serve", "--listen"].into_iter().map(str::to_string))
+            .expect_err("--listen requires a value")
+            .to_string();
+        assert!(msg.contains("--listen requires"), "{msg}");
+    }
+
+    /// T2.3：`ImpactAlert` buffer drain → SSE broadcast，envelope 於 dispatcher
+    /// 端包裝（先回應後通知的排序在 `main()` 迴圈；此處驗證轉發形狀與清空）。
+    #[test]
+    fn test_drain_impact_alerts_pushes_envelope_to_broadcast() -> Result<()> {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let buffer: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(vec![
+            serde_json::json!({ "note": "hot" }),
+            serde_json::json!({ "note": "warm" }),
+        ]));
+
+        drain_impact_alerts(&buffer, &tx);
+
+        let first = rx.blocking_recv()?;
+        assert_eq!(first["method"], "notifications/review/impact_alert");
+        assert_eq!(first["params"]["note"], "hot");
+        let second = rx.blocking_recv()?;
+        assert_eq!(second["params"]["note"], "warm");
+        assert!(buffer.lock().unwrap().is_empty(), "buffer must be drained");
+        Ok(())
+    }
+
+    /// Task 2.4 e2e 分派 helper：POST /mcp 單一 JSON-RPC 請求，回傳解析後
+    /// 的 `JsonRpcResponse`（僅 200 場景；202 用例直接 oneshot 斷言）。
+    async fn http_call(app: &axum::Router, body: String) -> Result<serde_json::Value> {
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))?,
+            )
+            .await?;
+        assert_eq!(resp.status(), 200);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Task 2.4 e2e：真實 HTTP 分棧——axum router（`server.rs`）+ 真實
+    /// `handle_request` dispatcher（std thread 內建 `Rc` fixture，與 `main()`
+    /// 執行緒模型一致）。initialize → notification 202 → `relay_init` →
+    /// `relay_save` → `relay_status` → 缺 path 凍結錯誤。stdio 啟動保證由
+    /// `parse_listen` 測試覆蓋。
+    #[tokio::test]
+    async fn test_http_e2e_relay_lifecycle_over_real_transport() -> Result<()> {
+        let (dispatch_tx, dispatch_rx) =
+            mpsc::channel::<(JsonRpcRequest, oneshot::Sender<JsonRpcResponse>)>();
+        let (notify_tx, _nrx) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let app = server::build_router(dispatch_tx, notify_tx, None);
+
+        let dir = tempfile::tempdir()?;
+        let ws = dir.path().display().to_string();
+        // D3：repo 候選目錄須存在於 relay root 內才可 save。
+        fs::create_dir_all(dir.path().join("relay-e2e"))?;
+        let registry_path = dir.path().join("http-e2e-registry.db");
+        let relay_registry = registry_path.clone();
+        let workspace_key = derive_workspace_key(dir.path());
+
+        // dispatcher：Rc fixture 於本 thread 內建置（Rc 不跨執行緒），recv
+        // 迴圈與 main() 相同形狀。
+        std::thread::spawn(move || -> Result<()> {
+            let _keep_dir = dir; // TempDir 存活至 dispatcher 結束
+            let state = Arc::new(RwLock::new(GraphState::empty()?));
+            let registry_db = graphify_registry::RegistryDb::open(&registry_path)?;
+            let plugin_host = Rc::new(RefCell::new(PluginHost::scan(
+                &PluginsConfig::default(),
+                &registry_db,
+                &workspace_key,
+            )));
+            let memory_query = Rc::new(RefCell::new(MemoryQueryService::new()?));
+            let relay = Rc::new(RefCell::new(
+                RelayPlugin::new().with_registry_path(relay_registry),
+            ));
+            let opendoc = Rc::new(RefCell::new(
+                OpendocPlugin::new().with_registry_path(registry_path.clone()),
+            ));
+            let review = Rc::new(RefCell::new(
+                ReviewPlugin::new().with_registry_path(registry_path.clone()),
+            ));
+            let telemetry = Rc::new(RefCell::new(
+                TelemetryPlugin::new().with_registry_path(registry_path.clone()),
+            ));
+            let coverage = Rc::new(RefCell::new(
+                CoveragePlugin::new().with_registry_path(registry_path),
+            ));
+
+            while let Ok((request, resp_tx)) = dispatch_rx.recv() {
+                let response = handle_request(
+                    request,
+                    Arc::clone(&state),
+                    Rc::clone(&plugin_host),
+                    Rc::clone(&memory_query),
+                    Rc::clone(&relay),
+                    Rc::clone(&opendoc),
+                    Rc::clone(&review),
+                    Rc::clone(&telemetry),
+                    Rc::clone(&coverage),
+                );
+                let _ = resp_tx.send(response);
+            }
+            Ok(())
+        });
+
+        // 1. initialize：MCP 握手。
+        let v = http_call(
+            &app,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string(),
+        )
+        .await?;
+        assert_eq!(v["result"]["serverInfo"]["name"], "graphify-mcp");
+
+        // 2. notification（無 id）→ 202 無本體（MCP streamable HTTP）。
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+                    ))?,
+            )
+            .await?;
+        assert_eq!(resp.status(), 202);
+
+        // 3. relay_init：per-call path 綁定（relay-workspace-context D1/D2）。
+        let v = http_call(
+            &app,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "graphify_relay_init",
+                            "arguments": { "path": ws, "project_context": "http e2e" } }
+            })
+            .to_string(),
+        )
+        .await?;
+        assert!(
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Initialized relay at"),
+            "init: {v}"
+        );
+
+        // 4. relay_save。
+        let v = http_call(
+            &app,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "graphify_relay_save",
+                            "arguments": { "path": ws, "repo": "relay-e2e",
+                                           "phase": "e2e", "conf": 0.9,
+                                           "next": "cutover nexus http" } }
+            })
+            .to_string(),
+        )
+        .await?;
+        assert!(
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("relay-e2e"),
+            "save: {v}"
+        );
+
+        // 5. relay_status。
+        let v = http_call(
+            &app,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": { "name": "graphify_relay_status",
+                            "arguments": { "path": ws } }
+            })
+            .to_string(),
+        )
+        .await?;
+        assert!(
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("relay-e2e"),
+            "status: {v}"
+        );
+
+        // 6. 缺 path → 凍結錯誤（零檔案寫入）。
+        let v = http_call(
+            &app,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": { "name": "graphify_relay_status", "arguments": {} }
+            })
+            .to_string(),
+        )
+        .await?;
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("workspace context required"),
+            "missing path: {v}"
+        );
+
         Ok(())
     }
 }

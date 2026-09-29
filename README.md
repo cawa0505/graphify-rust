@@ -20,6 +20,29 @@ Detailed system architecture, command specifications, and integration guides hav
 
 ---
 
+## 🌐 Remote MCP Server & TUI
+
+`graphify-mcp` ships as an HTTP-only MCP server (stdio removed):
+
+```bash
+# Serve over streamable HTTP — bind an intranet interface for remote clients
+graphify-mcp serve --listen 0.0.0.0:9899
+
+# Optional bearer token (clients must send `Authorization: Bearer <token>`)
+GRAPHIFY_MCP_TOKEN=secret graphify-mcp serve --listen 0.0.0.0:9899
+```
+
+The TUI can render a graph snapshot fetched from a remote graphify server instead of a local `.toon` file:
+
+```bash
+graphify tui --remote http://your-server:9899               # or GRAPHIFY_REMOTE env
+graphify tui --remote http://your-server:9899 --token secret # or GRAPHIFY_REMOTE_TOKEN env
+```
+
+Self-hosting: run `serve` on the machine holding the graph, then point the TUI (or any streamable-HTTP MCP client) at its `/mcp` endpoint.
+
+---
+
 ## ⚡ Performance Benchmark & Parity
 
 We compared the AST extraction and graph building speeds on a multi-language test project containing `Rust`, `Python`, `Go`, and `JavaScript` (110 source files, 422 edges):

@@ -85,6 +85,14 @@ enum Commands {
         /// Path to the graph file
         #[arg(short, long, default_value = "graphify-out/graph.toon")]
         graph: PathBuf,
+        /// Remote graphify 服務 URL（如 http://192.0.2.10:9899）；旗標
+        /// 覆蓋 `GRAPHIFY_REMOTE` env。設定時改經 streamable HTTP 取 server
+        /// 端圖譜快照，不可達時顯式失敗（不退化 local）。
+        #[arg(long)]
+        remote: Option<String>,
+        /// Remote server Bearer token（可選）；旗標覆蓋 `GRAPHIFY_REMOTE_TOKEN` env
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Index a codebase or a serialized graph file into the Qdrant vector store
     Index {
@@ -413,7 +421,11 @@ fn main() -> Result<()> {
             graph,
         } => run_path(&source, &target, &graph)?,
         Commands::InstallSkill { global, dir } => skill::install_skill(global, dir)?,
-        Commands::Tui { graph } => run_tui(&graph)?,
+        Commands::Tui {
+            graph,
+            remote,
+            token,
+        } => run_tui(&graph, remote.as_deref(), token.as_deref())?,
         Commands::Index {
             path,
             config,
@@ -987,7 +999,28 @@ fn run_path(source: &str, target: &str, graph_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_tui(graph_path: &Path) -> Result<()> {
+fn run_tui(graph_path: &Path, remote: Option<&str>, token: Option<&str>) -> Result<()> {
+    // relay-remote-transport 2b：remote 模式——旗標覆蓋 env；經與 nexus 同一
+    // streamable HTTP 端點取 server 端圖譜快照；不可達時顯式失敗（不退化
+    // local，delta spec graphify-tui）。local 路徑零更動。
+    let remote_url = remote
+        .map(str::to_string)
+        .or_else(|| std::env::var("GRAPHIFY_REMOTE").ok());
+    if let Some(url) = remote_url {
+        let bearer = token
+            .map(str::to_string)
+            .or_else(|| std::env::var("GRAPHIFY_REMOTE_TOKEN").ok());
+        let client = graphify_tui::remote::RemoteClient::new(&url, bearer);
+        println!("[graphify] Fetching graph from {} ...", client.url());
+        let graph = client.fetch_graph()?;
+        println!(
+            "[graphify] Loaded {} nodes / {} edges from remote",
+            graph.nodes.len(),
+            graph.edges.len()
+        );
+        return graphify_tui::run_tui(graph);
+    }
+
     let graph = match load_graph_output(graph_path) {
         Ok(g) => g,
         Err(e) => {

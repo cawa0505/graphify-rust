@@ -6,6 +6,7 @@
 // ponytail: collapsible_if 用於事件處理巢狀按鍵分支，攤平反而降低可讀性
 #![allow(clippy::collapsible_if)]
 
+pub mod remote;
 mod tui;
 pub mod ui;
 

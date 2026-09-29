@@ -19,6 +19,29 @@
 
 ---
 
+## 🌐 遠端 MCP 伺服器與 TUI
+
+`graphify-mcp` 僅以 streamable HTTP 提供 MCP 服務（已移除 stdio）：
+
+```bash
+# 以 streamable HTTP 啟動服務——遠端 client 請綁內網介面
+graphify-mcp serve --listen 0.0.0.0:9899
+
+# 可選 Bearer token（client 須帶 `Authorization: Bearer <token>`）
+GRAPHIFY_MCP_TOKEN=secret graphify-mcp serve --listen 0.0.0.0:9899
+```
+
+TUI 可改從遠端 graphify 伺服器抓取圖譜快照，不必依賴本機 `.toon` 檔：
+
+```bash
+graphify tui --remote http://your-server:9899                 # 或 GRAPHIFY_REMOTE env
+graphify tui --remote http://your-server:9899 --token secret  # 或 GRAPHIFY_REMOTE_TOKEN env
+```
+
+自行架設：在持有圖譜的機器上跑 `serve`，再將 TUI（或任何 streamable-HTTP MCP client）指向其 `/mcp` 端點即可。
+
+---
+
 ## ⚡ 效能基準測試與對齊 (Performance Benchmark & Parity)
 
 我們對同一個包含 `Rust`, `Python`, `Go` 以及 `JavaScript` 的多語言測試專案（110 個源檔案，422 條邊）進行了物理提取耗時比對：

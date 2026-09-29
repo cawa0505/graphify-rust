@@ -120,6 +120,8 @@ relay root SHALL 為 workspace root，且 SHALL 不執行任何向上（walk-up�
 
 MCP relay 工具（save/init/switch/resume/close/status）SHALL 要求 caller 傳入 `path`（absolute，必填）。未傳時 SHALL 回凍結錯誤 `workspace context required: pass the absolute path of your workspace` 且 SHALL NOT 寫入任何檔案 —— 絕不退回 server process cwd 推導身份（gateway 拓撲下 stdio child cwd 恆為 `$HOME`，退回即身分恆錯且重建 stray 檔）。CLI direct-spawn 路徑不變更：process cwd 可用時維持現行為。
 
+root/path 解析失敗時，錯誤訊息 SHALL 可定位（本變更新增，design D4）：區分「path 不存在於服務所在機」、「path 存在但無 relay.json」、「寫入 IO 失敗」三種狀況，服務機 hostname 入錯誤訊息。
+
 #### Scenario: 不再向上搜尋 relay 狀態檔
 
 - **GIVEN** `/home/user/proj-a` 為 git repo 且其 root 無 relay.json，`/home/user/relay.json` 存在，MCP server 啟動於 `/home/user/proj-a/src`
@@ -173,6 +175,25 @@ MCP relay 工具（save/init/switch/resume/close/status）SHALL 要求 caller �
 - **WHEN** handoff 解析 workspace root
 - **THEN** 維持現行為（process cwd 的 git toplevel），零行為變更
 
+#### Scenario: caller path 不存在於服務所在機（gateway 拓撲除錯訊號）
+
+- **GIVEN** graphify-mcp 服務跑在主機 A，caller 傳入的主機 B 路徑在 A 上不存在
+- **WHEN** 呼叫任一 relay 工具（`relay_status` / `relay_init` / `relay_save` …）
+- **THEN** 回錯 `workspace path not found on this host <A-hostname>: <path>`
+- **AND** 不回 NoRoot 文案、不回裸 io error
+
+#### Scenario: path 存在但尚未初始化
+
+- **GIVEN** path 是服務所在機上的有效 git workspace、無 relay.json
+- **WHEN** 呼叫 `relay_status`
+- **THEN** 回 `No relay.json found at <root> — run relayInit first`（帶實際 root）
+
+#### Scenario: init 寫入 IO 失敗
+
+- **GIVEN** path 存在但不可寫（權限/磁碟）
+- **WHEN** 呼叫 `relay_init`
+- **THEN** 回 `init failed: <io error>`，不裸回 `io: Permission denied`
+
 ### Requirement: Relay auto-save at session boundaries
 
 relay 邊界操作（close、switch、init 遇既有狀態）SHALL 先自動執行 relay_save 等價 flush（更新目標 repo 的 `last_updated` 並渲染 RESUME 快照）再進行後續操作。自動 save 為無條件冪等 flush —— 「若尚未 save」在 plugin 層無 saved-marker 可判別，以冪等重複 flush 實作（重複執行僅刷新 `last_updated` 與 RESUME 渲染，無資料損失）。自動 save 失敗時 SHALL fail-loud 回傳該錯誤並中止後續操作，不得默默吞錯。
@@ -197,6 +218,19 @@ relay 邊界操作（close、switch、init 遇既有狀態）SHALL 先自動執�
 - **THEN** 系統 SHALL 先自動執行 relay_save 等價 flush（flush 現況 + render RESUME 快照）至該既有 root
 - **AND** init SHALL 仍回傳 RootExists 拒絕（既有狀態不得被 init 的 fresh 建立覆寫；D4 防護語意不變）
 - **AND** 自動 save 失敗時 SHALL 回傳該 save 錯誤（fail-loud）
+
+### Requirement: HA 拓撲下 relay 身份不漂移
+
+NexusHub HA（gateway caddy → node1/node2/serve-host）任一 nexus 節點接手時，relay
+工具的身份 SHALL 不隨節點漂移：relay.json / specs/ / registry DB 一律讀寫
+**服務所在機**（workspace 機）的檔案系統，stdio 節點不再持有 relay 狀態。
+
+#### Scenario: HA failover 後 relay 狀態連續
+
+- **GIVEN** relay baton 儲存在 serve-host，nexus primary 從 node1 failover 到 node2
+- **WHEN** caller 呼叫 `relay_status`
+- **THEN** 看到的 baton / repos / spec-drift 與 failover 前一致（同一份
+  serve-host 檔案系統）
 
 ## Verification Evidence
 

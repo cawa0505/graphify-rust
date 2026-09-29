@@ -12,6 +12,9 @@ rust-tuikit = { path = "../../RustTuiKit" }
 ratatui = "0.28"
 crossterm = "0.28"
 anyhow = "1"
+# Task 2b remote 模式：streamable HTTP client（與 nexus 同端點取圖譜快照）
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde_json = "1"
 
 [lints]
 workspace = true

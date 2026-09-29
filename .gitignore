@@ -9,3 +9,8 @@ AGENTS.md
 .qdrant-initialized
 lcov.info
 relay.json
+# Code Relay (local state)
+RESUME.md
+next_step.md
+
+.relay/
