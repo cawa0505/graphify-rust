@@ -5,6 +5,7 @@
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::needless_pass_by_value)]
 
+mod domain_hub;
 mod memory_query;
 mod plugin_host;
 mod types;
@@ -39,16 +40,6 @@ use types::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, PathParams, QueryNodeParams, QueryParams,
     ReindexParams, TracePathParams,
 };
-
-/// Helper to create a standard MCP tool registration JSON object.
-/// Reduces boilerplate in the tools/list handler.
-fn register_tool(name: &str, desc: &str, schema: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "description": desc,
-        "inputSchema": schema,
-    })
-}
 
 struct GraphState {
     graph_data: GraphOutput,
@@ -351,385 +342,11 @@ fn handle_request(
             error: None,
         },
         "tools/list" => {
-            let mut tools = serde_json::json!([
-                register_tool("graphify_help", "List all available tools with descriptions", serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                })),
-                register_tool("graphify_graph_query", "BFS traversal of the knowledge graph (legacy compatibility)", serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "question": { "type": "string" }
-                    },
-                    "required": ["question"]
-                })),
-                {
-                    "name": "graphify_graph_path",
-                    "description": "Find shortest path between two nodes (legacy compatibility)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source": { "type": "string" },
-                            "target": { "type": "string" }
-                        },
-                        "required": ["source", "target"]
-                    }
-                },
-                {
-                    "name": "graphify_graph_summary",
-                    "description": "Get high-level topology summary",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                },
-                {
-                    "name": "graphify_graph_query_node",
-                    "description": "Query nodes by ID with depth",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "node_id": { "type": "string" },
-                            "depth": { "type": "integer", "default": 1 }
-                        },
-                        "required": ["node_id"]
-                    }
-                },
-                {
-                    "name": "graphify_graph_trace_path",
-                    "description": "Find shortest path between two nodes",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "from": { "type": "string" },
-                            "to": { "type": "string" }
-                        },
-                        "required": ["from", "to"]
-                    }
-                },
-                {
-                    "name": "graphify_graph_reindex",
-                    "description": "Reindex a file into the graph",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": { "type": "string" }
-                        },
-                        "required": ["file_path"]
-                    }
-                },
-                {
-                    "name": "graphify_plugin_notify",
-                    "description": "Manually broadcast a graph_updated notification to all healthy plugin subprocesses (kind: indexed|extracted|manual)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "kind": { "type": "string" }
-                        },
-                        "required": []
-                    }
-                },
-                {
-                    "name": "graphify_memory_query",
-                    "description": "Bounded, workspace-scoped semantic query over Graphify core memory (read-only; returns explicit unavailable status when semantic memory is off)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "workspace_key": { "type": "string", "description": "Workspace key (defaults to the registry active workspace; auto-detects from the current directory if none is active)" },
-                            "query": { "type": "string" },
-                            "limit": { "type": "integer", "default": 10 }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "name": "graphify_workspace_status",
-                    "description": "Return the currently active workspace's key, root path, and registration status",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "graphify_compose_read",
-                    "description": "Read an Assembly Manifest (YAML) describing cross-workspace architecture relations; validates every workspace path and referenced node and returns the parsed manifest with per-workspace graph summaries",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "manifest": { "type": "string", "description": "Path to the Assembly Manifest YAML file" }
-                        },
-                        "required": ["manifest"]
-                    }
-                },
-                {
-                    "name": "graphify_compose_write",
-                    "description": "Create or replace an Assembly Manifest (YAML) file; workspace paths and node references are validated BEFORE writing and the file is written atomically (on validation failure the file is left byte-for-byte unchanged)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "manifest": { "type": "string", "description": "Path of the Assembly Manifest YAML file to write" },
-                            "content": { "type": "string", "description": "Full YAML content of the assembly manifest" }
-                        },
-                        "required": ["manifest", "content"]
-                    }
-                },
-                {
-                    "name": "graphify_compose_render",
-                    "description": "Render the unified cross-workspace graph as ASCII (or SVG) via box-of-rain; returns the rendered diagram text",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "manifest": { "type": "string", "description": "Path to the Assembly Manifest YAML file" },
-                            "svg": { "type": "boolean", "default": false, "description": "Render as SVG instead of ASCII" }
-                        },
-                        "required": ["manifest"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_init",
-                    "description": "Initialize a relay.json at the current workspace to start cross-session / cross-repo state handoff",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "project_context": { "type": "string" },
-                            "kind": { "type": "string", "enum": ["backend", "frontend", "infra"] }
-                        },
-                        "required": ["project_context", "path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_save",
-                    "description": "Save the current repo's volatile state, phase, confidence and next-step into relay.json and render RESUME.md",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "repo": { "type": "string" },
-                            "role": { "type": "string" },
-                            "phase": { "type": "string" },
-                            "volatile": { "type": "string" },
-                            "conf": { "type": "number" },
-                            "next": { "type": "string" },
-                            "debt": { "type": "string" },
-                            "kind": { "type": "string" }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_close",
-                    "description": "Auto-save state and run the closing ritual: consistency check, spec diff, next_step.md, atomic commit, and a best-effort HandoffSnapshot into the registry. Accepts all relay_save params for one-shot close.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "repo": { "type": "string", "description": "Repo name (default: workspace root basename)" },
-                            "next": { "type": "string", "description": "Next session starter text" },
-                            "role": { "type": "string", "description": "Role (e.g. backend/frontend/infra)" },
-                            "phase": { "type": "string", "description": "Active phase" },
-                            "volatile": { "type": "string", "description": "Volatile state summary" },
-                            "conf": { "type": "number", "description": "Confidence score (1-5)" },
-                            "debt": { "type": "string", "description": "Comma-separated debt tags" },
-                            "kind": { "type": "string", "description": "Template kind (backend/frontend/infra)" }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_switch",
-                    "description": "Pass the baton to another registered repo and render its RESUME handover",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "repo": { "type": "string" },
-                            "kind": { "type": "string" }
-                        },
-                        "required": ["repo", "path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_resume",
-                    "description": "Render the RESUME handover for the active (or given) repo — used to bootstrap a new session",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "repo": { "type": "string" },
-                            "kind": { "type": "string" }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_status",
-                    "description": "Show relay summary: repos, active baton, spec drift, last update",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                {
-                    "name": "graphify_relay_add",
-                    "description": "Ingest an existing TODO/handoff doc from an old project into relay.json: stores the raw text and parses each non-empty line into open_threads",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute path of your workspace (required; relay identity derives from this, not the server cwd)" },
-                            "file": { "type": "string" },
-                            "repo": { "type": "string" }
-                        },
-                        "required": ["file", "path"]
-                    }
-                },
-                {
-                    "name": "graphify_opendoc_index",
-                    "description": "Index all `.md` spec blocks in the current workspace: parses markdown, extracts `# Symbol:` annotations, persists spec↔symbol hard links into the opendoc_links SQLite registry (Layer 1, no OpenDocuments dependency)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "doc_paths": {
-                                "type": "array",
-                                "items": { "type": "string" },
-                                "description": "Optional explicit doc paths (relative to workspace root); if omitted, all `.md` files under the root are indexed"
-                            }
-                        },
-                        "required": []
-                    }
-                },
-                {
-                    "name": "graphify_opendoc_get_context",
-                    "description": "Given a code symbol (e.g. `crate::auth::verify_token`), return the spec blocks documenting it (Layer 1 hard-link priority; falls back to Layer 2 vector search only when a workspace mapping is set and a backend is injected)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "symbol": { "type": "string" }
-                        },
-                        "required": ["symbol"]
-                    }
-                },
-                {
-                    "name": "graphify_opendoc_audit_drift",
-                    "description": "Audit doc-side drift: for each indexed spec↔symbol link, re-read the source doc, re-parse the block, and compare its signature (sha1) against the indexed one. Returns per-link status: UpToDate / DocChanged / DocMissing",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "graphify_review_ingest",
-                    "description": "Import a CRG IngestPayload JSON file into the review_bindings registry: each review point is line→symbol resolved against the cached GraphOutput (Slice 0 file-based import, no CRG dependency)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "payload": { "type": "string", "description": "Path to the IngestPayload JSON file" }
-                        },
-                        "required": ["payload"]
-                    }
-                },
-                {
-                    "name": "graphify_review_get_context",
-                    "description": "Query unresolved reviews bound to a canonical node id (e.g. `src/auth.rs:function:verify_token`)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "node": { "type": "string", "description": "canonical node id (assigned at ingest time)" }
-                        },
-                        "required": ["node"]
-                    }
-                },
-                {
-                    "name": "graphify_review_resolve",
-                    "description": "Mark a review as resolved by its review id",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "review_id": { "type": "string" },
-                            "reason": { "type": "string" }
-                        },
-                        "required": ["review_id"]
-                    }
-                },
-                {
-                    "name": "graphify_review_search_crg",
-                    "description": "Call CRG detect_changes_tool (CRG_BASE_URL) and bind its top-risk changed functions as review points (line→symbol via cached GraphOutput). Optional `base` git ref (default HEAD~1) widens the diff window.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "base": { "type": "string", "description": "git diff base ref (default HEAD~1)" }
-                        },
-                        "required": []
-                    }
-                },
-                {
-                    "name": "graphify_telemetry_ingest",
-                    "description": "Import telemetry metrics into the telemetry_bindings registry: each metric is line→symbol (or symbol→node, for Draco) resolved against the cached GraphOutput and flagged is_hotspot when p99 > 500ms or alloc > 5MB (dynamic thresholds, env TELEMETRY_HOTSPOT_P99_MS / TELEMETRY_HOTSPOT_ALLOC_BYTES). source=\"file\" 讀本地 IngestPayload JSON；source=\"draco-mcp\" 主動輪詢 Draco fetch_top_hotspots()（Top 10）",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source": { "type": "string", "description": "\"file\" 或 \"draco-mcp\"（即時輪詢）" },
-                            "path_or_draco_params": { "type": "string", "description": "source=\"file\" 時為 IngestPayload JSON 檔路徑；source=\"draco-mcp\" 時可省略" }
-                        },
-                        "required": ["source"]
-                    }
-                },
-                {
-                    "name": "graphify_telemetry_get_context",
-                    "description": "Query telemetry bindings for a canonical node id (e.g. `src/db/query.rs:function:query_users`): p99 latency / alloc / call rate / hotspot flag; include_impact_radius 於 Slice 2 展開 Upstream callers BFS",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "node": { "type": "string", "description": "canonical node id" },
-                            "include_impact_radius": { "type": "boolean", "description": "Slice 2: 含 Upstream callers 衝擊半徑" }
-                        },
-                        "required": ["node"]
-                    }
-                },
-                {
-                    "name": "graphify_coverage_ingest",
-                    "description": "測試覆蓋率資料匯入：LCOV 文字或 cobertura JSON。line→symbol 綁定後存入 coverage_bindings（graphify.db）；每次 ingest 以快照取代舊資料。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "format": { "type": "string", "enum": ["lcov", "json"], "description": "輸入格式" },
-                            "data": { "type": "string", "description": "LCOV 或 cobertura JSON 文字內容" }
-                        },
-                        "required": ["format", "data"]
-                    }
-                },
-                {
-                    "name": "graphify_coverage_get_context",
-                    "description": "查詢某個 canonical node id 的覆蓋率綁定（covered_lines / total_lines / line_rate）",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "node": { "type": "string", "description": "canonical node id（如 `src/a.rs:function:f`）" }
-                        },
-                        "required": ["node"]
-                    }
-                },
-                {
-                    "name": "graphify_coverage_blindspots",
-                    "description": "列出所有覆蓋率 < 50% 的盲區節點",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                },
-                {
-                    "name": "graphify_skeleton_extract",
-                    "description": "Extract a compact AST skeleton from a source file for LLM context (~300 tokens)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Path to the source file to skeletonize" }
-                        },
-                        "required": ["path"]
-                    }
-                }
-            ]);
+            // Domain Hub (openspec/changes/mcp-domain-hub): expose only the
+            // 6 aggregated domain entry points; legacy tool names stay
+            // callable via tools/call for backward compatibility but are no
+            // longer advertised (80% token saving on the tool list).
+            let mut tools = serde_json::json!(domain_hub::domain_tools());
             // A poisoned plugin lock must not hide the built-in tools;
             // degrade to the base list and let the next call retry.
             let host = plugin_host.borrow();
@@ -761,6 +378,49 @@ fn handle_request(
             };
 
             let tool_arguments = params.get("arguments").cloned().unwrap_or_default();
+
+            // Domain Hub dispatch (openspec/changes/mcp-domain-hub): a call
+            // to one of the 6 aggregated tools is rewritten into its legacy
+            // tool name + flattened arguments, then falls through to the
+            // original match arms below (which remain the compatibility
+            // layer for direct legacy-name calls, spec 需求 3).
+            // Missing/unknown action → -32602 listing the domain's valid
+            // actions (spec 需求 2).
+            match domain_hub::resolve_hub_call(tool_name, &tool_arguments) {
+                Ok(Some((legacy_name, legacy_args))) => {
+                    return handle_request(
+                        JsonRpcRequest {
+                            jsonrpc: request.jsonrpc.clone(),
+                            id: request.id.clone(),
+                            method: "tools/call".to_string(),
+                            params: serde_json::json!({
+                                "name": legacy_name,
+                                "arguments": legacy_args,
+                            }),
+                        },
+                        state_lock,
+                        plugin_host,
+                        memory_query,
+                        relay,
+                        opendoc,
+                        review,
+                        telemetry,
+                        coverage,
+                    );
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message,
+                        }),
+                    };
+                }
+            }
 
             // Built-in help tool: returns a formatted listing of all tools.
             if tool_name == "graphify_help" {
@@ -1984,6 +1644,11 @@ fn find_node_by_id_or_label(graph_data: &GraphOutput, input: &NodeId) -> Option<
 
 #[cfg(test)]
 mod tests {
+    // Tests assert on response payloads; unwrap/expect is the readable form
+    // and the workspace deny only targets production paths.
+    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use std::io::Write;
 
@@ -2374,8 +2039,7 @@ mod tests {
     // Task 4.2 (spec: mcp-workspace-context): workspace_status returns the
     // active workspace's key, root path, and registration status.
     #[test]
-    fn test_workspace_status_reports_active_workspace() -> Result<()> {
-        let tmp = tempfile::Builder::new()
+    fn test_workspace_status_reports_active_workspace() -> Result<()> {        let tmp = tempfile::Builder::new()
             .tempfile()?
             .into_temp_path()
             .keep()?;
@@ -2430,5 +2094,362 @@ mod tests {
             absent.get("workspace_key").is_none(),
             "no active workspace -> no injection (service keeps cwd fallback)"
         );
+    }
+
+    // ── Domain Hub e2e (openspec/changes/mcp-domain-hub) ───────────────────
+
+    /// Builds a full `handle_request` fixture with hermetic registry/plugins:
+    /// temp cwd, temp registry db (`GRAPHIFY_REGISTRY_PATH`), no plugin config.
+    /// Returns (tempdir, state, `plugin_host`, `memory_query`, relay, opendoc,
+    /// review, telemetry, coverage) — call through `handle_request`.
+    #[allow(clippy::type_complexity)] // fixture tuple mirrors handle_request params
+    fn hub_fixture() -> Result<(
+        tempfile::TempDir,
+        Arc<RwLock<GraphState>>,
+        Rc<RefCell<PluginHost>>,
+        Rc<RefCell<MemoryQueryService>>,
+        Rc<RefCell<RelayPlugin>>,
+        Rc<RefCell<OpendocPlugin>>,
+        Rc<RefCell<ReviewPlugin>>,
+        Rc<RefCell<TelemetryPlugin>>,
+        Rc<RefCell<CoveragePlugin>>,
+    )> {
+        let dir = tempfile::tempdir()?;
+        // Hermetic registry: every embedded plugin gets an explicit temp
+        // registry path (same pattern as the relay tests above); nothing
+        // touches the real XDG graphify.db.
+
+        let prev_cwd = std::env::current_dir()?;
+        std::env::set_current_dir(dir.path())?;
+
+        let state = Arc::new(RwLock::new(GraphState::empty()?));
+        let registry_path = dir.path().join("hub-test.db");
+        let registry_db = graphify_registry::RegistryDb::open(&registry_path)?;
+        let workspace_key = derive_workspace_key(dir.path());
+        let plugin_host = Rc::new(RefCell::new(PluginHost::scan(
+            &PluginsConfig::default(),
+            &registry_db,
+            &workspace_key,
+        )));
+        let memory_query = Rc::new(RefCell::new(MemoryQueryService::new()?));
+        let relay = Rc::new(
+            RefCell::new(
+                RelayPlugin::new().with_registry_path(registry_path.clone()),
+            ),
+        );
+        let opendoc = Rc::new(
+            RefCell::new(
+                OpendocPlugin::new().with_registry_path(registry_path.clone()),
+            ),
+        );
+        let review = Rc::new(
+            RefCell::new(
+                ReviewPlugin::new()
+                    .with_registry_path(registry_path.clone())
+                    .bind_for_cli(dir.path()),
+            ),
+        );
+        let telemetry = Rc::new(
+            RefCell::new(
+                TelemetryPlugin::new().with_registry_path(registry_path.clone()),
+            ),
+        );
+        let coverage = Rc::new(
+            RefCell::new(CoveragePlugin::new().with_registry_path(registry_path)),
+        );
+
+        if std::env::set_current_dir(&prev_cwd).is_err() {
+            let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
+        }
+        Ok((
+            dir, state, plugin_host, memory_query, relay, opendoc, review,
+            telemetry, coverage,
+        ))
+    }
+
+    fn hub_request(name: &str, arguments: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "tools/call".to_string(),
+            params: serde_json::json!({ "name": name, "arguments": arguments }),
+        }
+    }
+
+    /// spec 需求 1：tools/list 回傳恰好 6 個聚合工具（+ plugin host 工具）。
+    #[test]
+    fn test_tools_list_returns_six_domain_hubs() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let response = handle_request(
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            },
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        let tools = response
+            .result
+            .and_then(|r| r.get("tools").cloned())
+            .and_then(|t| t.as_array().cloned())
+            .ok_or_else(|| anyhow::anyhow!("tools/list result missing tools array"))?;
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "graphify_graph",
+                "graphify_relay",
+                "graphify_opendoc",
+                "graphify_review",
+                "graphify_metrics",
+                "graphify_compose",
+            ],
+            "tools/list must advertise exactly the 6 domain hubs"
+        );
+        // Every hub declares an action enum.
+        for t in &tools {
+            assert!(
+                t.pointer("/inputSchema/properties/action/enum").is_some(),
+                "hub tool missing action enum: {t}"
+            );
+        }
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec 需求 2：`graphify_relay(action="status")` 轉發到 `relay_status` 邏輯，
+    /// 回傳結構與原工具一致（content text）。先 `relay_init` 讓 workspace 有
+    /// relay.json（status 對無 relay.json 的 workspace 誠實回 `NoRoot` 錯誤）。
+    #[test]
+    fn test_hub_relay_status_forwards_to_relay_status() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let ws = dir.path().display().to_string();
+        let init_resp = handle_request(
+            hub_request(
+                "graphify_relay",
+                serde_json::json!({ "action": "init", "path": ws, "project_context": "hub test" }),
+            ),
+            Arc::clone(&state),
+            Rc::clone(&plugin_host),
+            Rc::clone(&memory_query),
+            Rc::clone(&relay),
+            Rc::clone(&opendoc),
+            Rc::clone(&review),
+            Rc::clone(&telemetry),
+            Rc::clone(&coverage),
+        );
+        assert!(
+            init_resp.error.is_none(),
+            "hub relay init must succeed: {:?}",
+            init_resp.error
+        );
+        let response = handle_request(
+            hub_request("graphify_relay", serde_json::json!({ "action": "status", "path": ws })),
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        assert!(
+            response.error.is_none(),
+            "hub relay status must succeed: {:?}",
+            response.error
+        );
+        let text = response
+            .result
+            .and_then(|r| r.pointer("/content/0/text").cloned())
+            .and_then(|t| t.as_str().map(String::from))
+            .ok_or_else(|| anyhow::anyhow!("relay status must return content text"))?;
+        assert!(text.contains("Relay root"), "{text}");
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec 需求 2：缺少 action → 明確錯誤，列出該領域所有有效 action。
+    #[test]
+    fn test_hub_missing_action_lists_valid_actions() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let response = handle_request(
+            hub_request("graphify_metrics", serde_json::json!({})),
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        let err = response
+            .error
+            .ok_or_else(|| anyhow::anyhow!("missing action must be an error"))?;
+        assert_eq!(err.code, -32602);
+        for action in [
+            "coverage_ingest",
+            "coverage_get",
+            "coverage_blindspots",
+            "telemetry_ingest",
+            "telemetry_get",
+        ] {
+            assert!(
+                err.message.contains(action),
+                "error must list valid action {action}: {}",
+                err.message
+            );
+        }
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec 需求 2：未知 action → 明確錯誤，列出有效 action。
+    #[test]
+    fn test_hub_unknown_action_lists_valid_actions() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let response = handle_request(
+            hub_request(
+                "graphify_compose",
+                serde_json::json!({ "action": "teleport" }),
+            ),
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        let err = response
+            .error
+            .ok_or_else(|| anyhow::anyhow!("unknown action must be an error"))?;
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("teleport"), "{}", err.message);
+        assert!(err.message.contains("read"), "{}", err.message);
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// spec 需求 3：舊工具名稱直接呼叫仍走原邏輯（不得 `MethodNotFound`）。
+    /// `relay_status` 對無 relay.json 的 workspace 誠實回 `NoRoot` 錯誤 —
+    /// 這證明請求確實抵達了原 relay 邏輯（而非 tool-not-found）。
+    #[test]
+    fn test_legacy_tool_name_still_routes() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let response = handle_request(
+            hub_request(
+                "graphify_relay_status",
+                serde_json::json!({ "path": dir.path().display().to_string() }),
+            ),
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        let err = response
+            .error
+            .ok_or_else(|| anyhow::anyhow!("legacy relay_status must reach the relay logic"))?;
+        assert!(
+            err.message.contains("No relay.json"),
+            "legacy call must hit the real relay handler: {err:?}"
+        );
+        let _ = dir.close();
+        Ok(())
+    }
+
+    /// Hub → legacy 轉發後的行為等價性：`graphify_compose(action="read")` 與
+    /// `graphify_compose_read` 對同一 manifest 回傳相同內容。workspace 需先
+    /// 有 graphify-out/graph.toon（compose 驗證會解析每個 workspace 的圖）。
+    #[test]
+    fn test_hub_compose_read_equivalent_to_legacy() -> Result<()> {
+        let (dir, state, plugin_host, memory_query, relay, opendoc, review, telemetry, coverage) =
+            hub_fixture()?;
+        let ws_out = dir.path().join("ws-a").join("graphify-out");
+        fs::create_dir_all(&ws_out)?;
+        let graph = graphify_core::GraphOutput {
+            nodes: vec![graphify_core::Node {
+                id: graphify_core::NodeId("src/main.rs".to_string()),
+                label: "src/main.rs".to_string(),
+                file_type: graphify_core::FileType::Code,
+                kind: "function".to_string(),
+                language: "rust".to_string(),
+                source_file: "src/main.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+                doc_comment: None,
+                description: None,
+                metadata: None,
+            }],
+            edges: vec![],
+            metadata: graphify_core::GraphMetadata::default(),
+        };
+        fs::write(ws_out.join("graph.toon"), graphify_core::to_toon(&graph))?;
+        let manifest = dir.path().join("assembly.yaml");
+        fs::write(
+            &manifest,
+            "workspaces:\n  - id: ws-a\n    path: ws-a\nrelations: []\n",
+        )?;
+        let args = serde_json::json!({ "manifest": manifest.display().to_string() });
+
+        let hub_resp = handle_request(
+            hub_request("graphify_compose", serde_json::json!({ "action": "read", "manifest": manifest.display().to_string() })),
+            Arc::clone(&state),
+            Rc::clone(&plugin_host),
+            Rc::clone(&memory_query),
+            Rc::clone(&relay),
+            Rc::clone(&opendoc),
+            Rc::clone(&review),
+            Rc::clone(&telemetry),
+            Rc::clone(&coverage),
+        );
+        let legacy_resp = handle_request(
+            hub_request("graphify_compose_read", args),
+            state,
+            plugin_host,
+            memory_query,
+            relay,
+            opendoc,
+            review,
+            telemetry,
+            coverage,
+        );
+        let hub_text = hub_resp
+            .result
+            .and_then(|r| r.pointer("/content/0/text").cloned())
+            .ok_or_else(|| anyhow::anyhow!("hub compose read failed: {:?}", hub_resp.error))?;
+        let legacy_text = legacy_resp
+            .result
+            .and_then(|r| r.pointer("/content/0/text").cloned())
+            .ok_or_else(|| anyhow::anyhow!("legacy compose read failed: {:?}", legacy_resp.error))?;
+        assert_eq!(hub_text, legacy_text, "hub and legacy must be equivalent");
+        assert!(
+            hub_text.as_str().is_some_and(|s| s.contains("manifest OK")),
+            "{hub_text}"
+        );
+        let _ = dir.close();
+        Ok(())
     }
 }
